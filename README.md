@@ -249,11 +249,9 @@ flowchart TD
     A["company folder<br/>list_documents · read_document · sql_query · interview"] --> B{"Router<br/>point → evidence source<br/>(static table, no model)"}
     B -->|"points 1 + 5"| C["sql_query × 5<br/>company · medians · revenue by year<br/>costs by year · month coverage · cash"]
     C --> D["Python: which years are complete?<br/>growth (normalised to 2y) · operating margin<br/>trend · cash conversion"]
-    D --> E{"gap to industry median<br/>wider than the band?"}
-    E -->|"yes"| F["verdict 1, 5<br/>high confidence"]
-    E -->|"no"| G["3 corroborating tests<br/>majority vote · low confidence"]
+    D --> E{"sign of own − industry median<br/>no threshold added: this is the verdict"}
+    E --> F["verdict 1, 5<br/>+ confidence label<br/>(gap under the band → low,<br/>verdict unchanged)"]
     F --> H["verdict 1, 5"]
-    G --> H
     B -->|"point 7"| I["Scuttlebutt sub-agent<br/>create_agent + interview tool"]
     I --> J["plan: current_employee, then<br/>former_employee; ≤ 3 of 10 calls"]
     J --> K["quotes"]
@@ -330,6 +328,7 @@ names in a temporary folder and puts `results.csv` back afterwards:
 | Point 7 spends its interviews sensibly and drops non-answers | `test_robust.py` | with a mock tool where the current employee refuses, the sub-agent still hears the former employee, the refusal is dropped, and the verdict is the right FAIL |
 | Odd data does not crash the pipeline | `test_degrade.py` | five synthetic shapes — a two-year history, an industry genuinely missing from `industry_medians`, the same industry spelled with different capitalisation, a final year with 8 months of costs, a four-year history, and a zero-revenue first year — each produces verdicts plus a note recording what was substituted |
 | The rule does not lean on a company's name | `test_rename.py` | all 20 companies renamed in the folder names, the documents, the interviews and the `company` table, then re-run end to end: **60/60**, and **0** verdicts contradicting the key |
+| It runs from a clean checkout, as Section 6 asks | `git clone` into an empty directory | a fresh clone of this repo runs end to end in **2m 02s**, prints 60/60, writes a 20-row `results.csv`, and leaves the working tree clean — nothing depends on an untracked file (the key is the only thing `.env` provides) |
 | One broken company cannot sink the run | `test_errors.py` | a company whose tools all raise still gets an entry and the other company is unaffected |
 
 ### What the audit changed
