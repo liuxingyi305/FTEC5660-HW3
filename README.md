@@ -171,13 +171,166 @@ companies with the same tools and the same answer key rules, but different
 names and wording, and scores your 3 points only.
 
 ## Homework 3 solution:
-> to students: this is your report, see the homework description.
 
 ### My 3 points and rules
-> for each point: why you chose it, your PASS rule in one or two sentences, and the evidence it uses. Quote Fisher where it helps.
+
+I chose points **1, 5 and 7**. Together they force the agent to use two different
+kinds of evidence — an order book and cost ledger on one side, an employee's own
+words on the other — which is exactly the split Fisher draws between what a
+company reports and what the outside world says about it.
+
+| # | Fisher's question (his words) | Why I chose it | My PASS rule | Evidence |
+| --- | --- | --- | --- | --- |
+| 1 | "Does the company have products or services with sufficient market potential to make possible a sizable increase in sales for at least several years?" | It is Fisher's first filter: without a long runway of growth nothing else rescues the stock. "Sizable" is meaningless in the abstract, so it has to be made relative to the industry. | PASS when two-year revenue growth (FY2023 → FY2025, the last three complete years in the order book) is at or above the industry median two-year revenue growth. | `orders` (sum of `amount` by year) vs `industry_medians.revenue_growth_2y_pct` |
+| 5 | "Does the company have a worthwhile profit margin?" | The word doing the work is "worthwhile". Fisher cares about margins because they pay for growth without new shares, and because they reveal pricing power; both are relative to what competitors earn. | PASS when the FY2025 operating margin, computed exactly as the homework defines it — (revenue − cost of sales − selling and admin − R&D) ÷ revenue — is at or above the industry median operating margin. | `orders` + `monthly_costs` vs `industry_medians.operating_margin_pct` |
+| 7 | "Does the company have outstanding labor and personnel relations?" | This is the point that cannot be read off a database. It is Fisher's "scuttlebutt" method: you go outside the company and ask the people who actually work there, because management's "our people are our greatest strength" proves nothing. It also makes the agent plan a scarce resource (10 interviews). | PASS when a current or former employee describes fair pay, long tenure and grievances that get fixed when raised; FAIL when they describe constant overtime, heavy turnover, a strike or strike threat, or low morale. | `interview(role, topic="working_conditions")` — only `current_employee` and `former_employee` know this topic |
+
+Why these three and not points 4, 6 or 15: 1 and 5 are pure arithmetic, so the
+verdict cannot drift with wording — the private set changes wording, not SQL.
+Point 7 is judgment on a quote, which a model does well, and it is the one point
+where a model that only reads documents would be completely blind.
 
 ### Design
-> a visualization of your agent design and one paragraph describing it.
+
+```mermaid
+flowchart TD
+    A["company folder<br/>list_documents · read_document · sql_query · interview"] --> B{"Router<br/>point → evidence source<br/>(static table, no model)"}
+    B -->|"point 1 + point 5"| C["sql_query × 4<br/>revenue by year · costs by year<br/>industry medians · company industry"]
+    C --> D["Python: growth_2y, operating margin<br/>compare with industry median"]
+    D --> E["verdict 1, verdict 5<br/>deterministic"]
+    B -->|"point 7"| F["Scuttlebutt sub-agent<br/>create_agent + interview tool"]
+    F --> G["plan: current_employee first,<br/>former_employee as fallback,<br/>stop after one answer, ≤ 3 of 10 calls"]
+    G --> H["quote"]
+    H --> I["judge #1"]
+    H --> J["judge #2 (independent reflection)"]
+    I --> K["verdict 7<br/>reflection wins on conflict"]
+    J --> K
+    E --> L["summary writer<br/>sees verdicts, numbers, quote<br/>and the 2025 shareholder letter"]
+    K --> L
+    L --> M["results.csv"]
+```
+
+The router is a fixed table, not a model call: points 1 and 5 can only be
+answered by `sql_query`, point 7 only by `interview`, so letting a model choose
+would add cost and risk without adding information. Everything numeric happens
+twice removed from the model — the model asks for the data through `sql_query`,
+and Python turns the returned rows into a growth rate and an operating margin,
+because the homework is right that model arithmetic is the main source of wrong
+verdicts. Point 7 is the one place where a model must judge: a tool-calling
+`create_agent` is given only the `interview` tool and a plan (ask the current
+employee first, fall back to a former employee, stop as soon as someone gives a
+substantive answer, never more than three of the ten calls), and then two
+independent model calls read the same quote — the second one is told to decide
+from scratch, and it wins if the two disagree, which is a cheap reflection step.
+A final chained call writes the two-or-three sentence summary from the verdicts,
+the computed ratios and the quote; it is explicitly forbidden to change a
+verdict, and it also sees the 2025 letter to shareholders so that management's
+claims can be set against the numbers rather than repeated. Companies are
+analysed four at a time with `asyncio.gather` over `asyncio.to_thread`, each with
+a 600-second timeout and its own `try/except`, so one bad API call or one odd
+company still leaves a full `results.csv`. Two small defences matter more than
+they look: the shareholder letter's file name is discovered through
+`list_documents` instead of being assumed, and every model reply is parsed with
+one retry, so a malformed answer costs one call rather than a verdict.
 
 ### Results
-> your point score on `public_test`, the companies where your verdicts disagree with the public answers, and why.
+
+`python3 hw3.py --data-folder public_test` gives **60/60 correct point verdicts
+on the 20 public companies, balanced score 100.0%** (30/30 truly passing points
+marked PASS, 30/30 truly failing points marked FAIL), in about 80 seconds, using
+**one interview per company out of the ten allowed**. I ran it five times; the
+verdicts were identical every time.
+
+There are **no companies where my verdicts disagree with
+`public_test/ground_truth.json`**, so there is nothing to explain away. Because a
+perfect score on the visible data is exactly the situation in which a student
+fools themselves, I audited it instead of trusting it. The scripts are in the
+repo and write nothing:
+
+| Check | Script | Result |
+| --- | --- | --- |
+| `results.csv` is what the code produced, not edited by hand | `verify.py` | recomputes points 1 and 5 from the tools with different SQL (CASE WHEN instead of GROUP BY): **20/20 verdicts reproduced** |
+| The answer key is not an absolute cut-off my rule happens to imitate | `verify.py` | **no** fixed growth or margin threshold can separate the 20 answers (0 of 40 candidate cut-offs), so the key must be industry-relative — which is what my rule is |
+| The verdicts survive a different benchmark | `verify.py` | industry medians differ from medians computed across the 20 public peers (e.g. packaging 11.5% vs 18.3% growth); I use the table, as the homework says, and only the table reproduces the key |
+| The rule is not knife-edge | `verify.py` | median distance to the line is 3.7 points; the tightest is Kestrel's margin, 10.0% against 8.3% (1.71 points) |
+| Point 7 survives rewording, which is the one thing the private set changes | `test_robust.py` | each real quote rewritten twice by the model, then re-judged: **40/40 paraphrased verdicts still match the key** |
+| Point 7 spends its interviews sensibly | `test_robust.py` | with a mock interview tool where the current employee refuses, the sub-agent falls back to a former employee and returns the right FAIL in 2 of 10 calls |
+| One broken company cannot sink the run | `test_errors.py` | a company whose tools all raise still gets an entry and the other company is unaffected |
+
+Two risks I want to be straight about. First, the rules were tuned while looking
+at the public answers — the homework tells you to do exactly that ("test your
+rules on the public answers... if your rule disagrees, rethink it"), but it does
+mean the 100% is in-sample: it shows the rule matches the key, not that it
+generalises to unknown companies. What gives me some confidence is that the
+matching rule is the industry benchmark rather than a fitted number.
+
+Second, the two database points depend on the definitions more than they look.
+Re-running the same comparison with growth measured as one year (FY2023→FY2024)
+instead of two, or as a CAGR, changes 14 of 20 verdicts; measuring the margin
+before R&D changes 5, and using gross margin changes 6. That is not a flaw in the
+rule, it is a warning that "revenue growth 2y" and "operating margin" have to be
+the course's definitions, and they are: the FY2025 operating margin is
+(revenue − cost of sales − selling and admin − R&D) ÷ revenue exactly as Section
+3.2 defines it, and the growth rate is compared with the
+`revenue_growth_2y_pct` column of `industry_medians`. A future version would
+report both definitions side by side and flag any company where they disagree.
+
+
+## Task 2: Reflection — AI sycophancy and AI psychosis
+
+**Sycophancy is a data problem wearing a personality.** A model trained on human
+approval learns that agreement is rewarded, and the failure is quiet: it does not
+say "you are right", it says "here is a balanced view" and then quietly adopts
+yours. This homework is a controlled experiment in that temptation. Every
+company's shareholder letter is written to be agreeable — "our sales team is
+second to none", "we have never cut research spending". An agent that reads those
+documents and reports what it read will produce confident, well-written,
+completely wrong analysis, because the letters are identical in tone for
+companies that are failing. The 20 public companies make the cost visible: an
+agent that passes everything scores 50% balanced, not 90%, because the metric
+deliberately refuses to reward agreement. Sycophancy is not just flattering, it
+is uninformative, and a scoring rule that separates the two shares is a cheap
+way to make it expensive.
+
+What I had to do to my own agent is the same operation in miniature. The first
+version of the reasoning was going to be "ask the model to compare the margin
+with the industry median". That is a request for agreement, not a check: given
+two numbers and a rule, a model under pressure to be helpful will find a way to
+make them consistent, and the homework warns that model arithmetic was its most
+common cause of wrong verdicts. So the numbers never enter the model's head. They
+are computed in Python from `sql_query` output, and the model is handed the
+answer it must explain. The interesting part is that this made the summaries
+*better*, not just safer: an agent that has nothing to decide writes more
+precisely about what it saw. The same logic applies to the interview: two
+independent judgements, the second told explicitly not to defer to the first,
+because a reviewer who knows the answer is not a reviewer.
+
+**AI psychosis is what happens when a system's model of the world stops being
+corrected by the world.** It is not a single dramatic hallucination; it is a
+loop with no exit condition. The agent invents a fact, builds a plan on it,
+interprets every new observation as confirmation, and spends its budget
+elaborating the mistake. The failure modes are structural, not emotional: no
+termination criterion, no external check, unlimited self-reference. Anyone who
+has watched an agent burn ten tool calls on a misinterpreted error message has
+seen a small version of it.
+
+The homework's design quietly punishes psychosis. There are ten interviews, so
+an agent that keeps asking "to be sure" runs out and starts seeing refusals
+everywhere; the grader runs three times, so luck does not survive; and the
+private set is unseen, so a rule tuned to the public answers collapses. My
+defences are deliberately boring: hard caps (three interview calls, 600 seconds
+per company), a deterministic core that the model cannot talk itself out of, a
+router that is a table rather than an opinion, and a reflection step whose only
+job is to disagree once. The 100% score is not evidence that the agent is
+intelligent; it is evidence that the loop has an exit.
+
+Where this becomes uncomfortable is that the two failures are the same failure
+seen from opposite ends. Sycophancy is the model bending its beliefs toward the
+human; psychosis is the model bending its beliefs toward itself. Both are the
+same missing term: contact with something that cannot be argued with. In this
+homework that thing is `SUM(amount)` — an unglamorous number that does not care
+what anyone thinks. The lesson I am taking away is not "use tools", it is that an
+agent needs at least one part of its world that is expensive to lie to. A model
+allowed to grade its own homework will always pass, and it will be sincere about
+it, which is worse.
+
