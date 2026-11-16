@@ -507,10 +507,10 @@ Every constraint in Sections 2, 3.4 and 3.5 of the homework, and where it is met
 
 ### Residual risk
 
-60/60 is the result on the data I can see, and the homework's own instruction is
-to tune against it, so the honest question is not "is this in-sample?" but "what
-could still cost a verdict on the private companies, and what limits it?". Two
-things, and both are measured rather than waved away.
+60/60 is the result on the data I can see, which is exactly what the homework asks
+for. The remaining question is narrower: what could still cost a verdict on the
+private companies, and what limits it? Two things, both measured rather than waved
+away.
 
 The first is the benchmark. The rule compares the company with the median on its
 own industry row, and the private set's medians are different numbers from mine.
