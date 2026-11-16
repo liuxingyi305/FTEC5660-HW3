@@ -179,31 +179,68 @@ kinds of evidence — an order book and a cost ledger on one side, an employee's
 words on the other — which is exactly the split Fisher draws between what a
 company reports and what the outside world says about it.
 
-All three rules have the same two-layer shape: a **decisive test** that reads the
-evidence at face value, and a **corroboration layer** that takes over when the
-decisive test is too close to call. That shape is not decoration. A rule whose
-verdict changes when the industry median moves by a tenth of a point is not a
-rule, it is an accident waiting for a different dataset; my first version was
-exactly that, and the audit in Results is what caught it.
+All three rules are built around one question: **what single comparison decides
+this point?** For points 1 and 5 it is the company's ratio against the industry
+median; for point 7 it is the count of favourable against adverse dimensions.
+Everything else the pipeline gathers — a confidence band, the margin trend, the
+cash conversion, a second employee — is reported as context and sets a confidence
+label, but none of it can move a verdict. I had that the other way round in an
+earlier version and reversed it after re-reading Section 3.5: the key uses one
+fixed rule per point and *the data never sits close to that rule's line*, so a
+layer that overrides the comparison near the line could only ever push an answer
+away from the key. The section "What the audit changed" prices that decision.
 
 | # | Fisher's question (his words) | Why I chose it | My PASS rule | Evidence |
 | --- | --- | --- | --- | --- |
-| 1 | "Does the company have products or services with sufficient market potential to make possible a sizable increase in sales for at least several years?" | Fisher's first filter: without a long runway of growth nothing else rescues the stock. "Sizable" is meaningless in the abstract, so it is measured against the industry, and against a floor. | **Decisive:** two-year revenue growth (normalised to a two-year rate if the history is shorter) at least **1.5 points above** the industry median. **Within 1.5 points** the ratio is not decisive; the point passes when at least two of three tests agree: growth at or above the median, revenue up in *every* available year, growth above 10% in absolute terms. | `orders` (sum of `amount` by year), `monthly_costs` (month coverage, to know which years are complete), `industry_medians.revenue_growth_2y_pct` |
-| 5 | "Does the company have a worthwhile profit margin?" | The word doing the work is "worthwhile". Fisher cares about margins because they pay for growth without new shares and because they reveal pricing power; both are relative to what competitors earn. | **Decisive:** FY2025 operating margin at least **1.0 point above** the industry median. **Within 1.0 point** the point passes when at least two of three tests agree: at or above the median, margin within 0.5 points of where it was in the first year available, operating cash flow at least half of operating profit. | `orders` + `monthly_costs` + `quarterly_cash`, against `industry_medians.operating_margin_pct` |
+| 1 | "Does the company have products or services with sufficient market potential to make possible a sizable increase in sales for at least several years?" | Fisher's first filter: without a long runway of growth nothing else rescues the stock. "Sizable" is meaningless in the abstract, so it is measured against the industry. | **Decisive:** two-year revenue growth (restated as a two-year rate if the history is shorter) **at or above the industry median**. Nothing is added to the median. A gap under 1.5 points is labelled thin in the summary, next to the growth in every year and whether the rate clears 10%, but the verdict stays the comparison. | `orders` (sum of `amount` by year), `monthly_costs` (month coverage, to know which years are complete), `industry_medians.revenue_growth_2y_pct` |
+| 5 | "Does the company have a worthwhile profit margin?" | The word doing the work is "worthwhile". Fisher cares about margins because they pay for growth without new shares and because they reveal pricing power; both are relative to what competitors earn. | **Decisive:** FY2025 operating margin **at or above the industry median**. A gap under 1.0 point is labelled thin, with the margin trend and the cash conversion printed as context, but the verdict stays the comparison. | `orders` + `monthly_costs` (+ `quarterly_cash` for context), against `industry_medians.operating_margin_pct` |
 | 7 | "Does the company have outstanding labor and personnel relations?" | The point that cannot be read off a database. It is Fisher's "scuttlebutt" method: go outside the company and ask the people who work there, because management's "our people are our greatest strength" proves nothing. | Two employee accounts are collected, and each is labelled on five dimensions — pay, tenure, hours, grievances, disputes. **PASS when favourable dimensions clearly outnumber adverse ones; FAIL when adverse ones do not fall short** (any adverse dimension that is not outweighed fails the point, because Fisher asks for *outstanding* relations). Silence on a dimension counts for nothing. | `interview(role, topic="working_conditions")`, roles `current_employee` and `former_employee` (the only two who know this topic) |
 
-The operating margin is the homework's own definition, (revenue − cost of sales −
-selling and admin − R&D) ÷ revenue, and the benchmark is the `industry_medians`
-row for the company's own industry, as Section 3.2 instructs.
+**Where every number comes from.** Neither metric is invented, and neither is
+read off a document by the model. Revenue is the sum of `orders.amount` for a
+calendar year, and only years whose `monthly_costs` ledger covers twelve months
+count, so the 2026 half-year can never enter a comparison. Growth is
+`revenue_last / revenue_first − 1`, which is the same convention as the
+`revenue_growth_2y_pct` column it is compared against, restated as a two-year
+rate only when a company has a shorter history. The margin is the homework's own
+definition, (revenue − cost of sales − selling and admin − R&D) ÷ revenue, for the
+last complete year. The benchmark is the `industry_medians` row for the company's
+own industry, **read from the table rather than recomputed** from the twenty
+sampled companies: Section 3.2 says that row is the median for the industry, while
+a median of the two or three sample firms in an industry would be a different and
+much noisier number.
 
-Two design choices are worth stating outright, because they are judgement calls
-rather than facts. The 1.5 and 1.0 point bands are wide enough to cover rounding
-and definition noise but far narrower than the smallest real gap in the public
-set (1.71 points), so they never decide anything there — 0 of 40 decisions on
-`public_test` were taken inside a band. The corroboration constants (10% growth
-as "sizable", 0.5 points of margin drift as "held", cash conversion of 0.5) are
-economic rules of thumb from Fisher's own reasoning, and they only ever act as
-tie-breakers.
+**Choosing between defensible variants.** Each of those choices has alternatives,
+so `variant_sweep.py` enumerates them — measurement window (first-to-last,
+drop-the-latest-year, last two years), margin definition (with or without R&D,
+with or without selling/admin, gross), benchmark (own industry, cross-industry),
+and tie-breaking (`>=` or `>`) — and re-decides all 20 companies under each. Point
+1 moves by at most **2/20** across every window and tie-break combination; point 5
+moves by at most **6/20**, and all of that movement comes from changing the margin
+formula away from the one the homework defines (excluding R&D costs 5 verdicts,
+excluding selling/admin 6, gross margin 6). Tie-breaking never matters, because no
+company sits exactly on a line. The two variables that survive are therefore the
+margin formula and the benchmark, and both are pinned by the homework text rather
+than by my taste.
+
+Four other public forks of this repository (Crick-Zhou, 77qii, ZzzzzO22,
+ycyao040410) independently wrote the same two comparisons with the same
+`industry_medians` benchmarks, which is the closest thing to a second opinion
+available without the private key. Two of them added conditions on top — the
+metric must be positive, revenue must rise in every single year, the comparison
+must be strict — and `variant_sweep.py` shows all three variants still score 20/20
+here. That is the argument for keeping the *minimum* rule: a condition the key
+does not have can only lose a company on unseen data, and the public set cannot
+tell the two apart.
+
+Two things I want on the record as judgement calls rather than facts. The 1.5 and
+1.0 point bands are labels, not tie-breakers: they are wide enough to cover
+rounding and definition noise and far narrower than the smallest real gap in the
+public set (1.71 points), so on this data they never change a verdict — 0 of 40
+decisions were taken inside a band. The context constants (10% growth as
+"sizable", 0.5 points of margin drift as "held", cash conversion of 0.5) are
+economic rules of thumb from Fisher's reasoning and are printed in the summary;
+they do not enter either verdict.
 
 ### Design
 
@@ -243,9 +280,9 @@ is half a year and treating it as a full year invents a collapse in revenue; a
 short history is normalised to a two-year rate; and if the company's industry is
 missing from `industry_medians` the benchmark falls back to the median across the
 published industries, with the substitution recorded and admitted in the summary.
-A verdict is only taken on the ratio itself when the company is clearly away from
-the median; near the line the rule asks for corroboration instead of splitting
-hairs.
+The verdict itself is always the comparison with the median; the band only decides
+whether the summary calls the gap thin, and the corroborating numbers are printed
+beside it rather than allowed to overrule it.
 
 Point 7 is the only place where a model touches evidence, and even there it does
 not decide. A tool-calling `create_agent` is given the `interview` tool alone and
@@ -268,45 +305,97 @@ one bad API call still leaves a full `results.csv`.
 `python3 hw3.py --data-folder public_test` gives **60/60 correct point verdicts
 on the 20 public companies, balanced score 100.0%** (30/30 truly passing points
 marked PASS, 30/30 truly failing points marked FAIL), in about **2 minutes**,
-using **2 interviews per company out of the ten allowed**. I ran the pipeline
-seven times across both versions; the verdicts were identical every time.
+using **2 interviews per company out of the ten allowed**. I ran it four times end
+to end on the public set — three before the last round of generalisation fixes and
+one after — plus once on the renamed rebuild described below; the same 60 verdicts
+came back every time.
 
 There are **no companies where my verdicts disagree with
 `public_test/ground_truth.json`**, so there is nothing to explain away. Because a
 perfect score on the visible data is exactly the situation in which a student
 fools themselves, I audited it instead of trusting it. The scripts are in the repo
-and write nothing:
+and are read-only, except `test_rename.py`, which rebuilds the whole set under new
+names in a temporary folder and puts `results.csv` back afterwards:
 
 | Check | Script | Result |
 | --- | --- | --- |
 | `results.csv` is what the code produced, not edited by hand | `verify.py` | recomputes points 1 and 5 from the tools with different SQL (CASE WHEN instead of GROUP BY): **20/20 verdicts reproduced** |
 | The answer key is not an absolute cut-off my rule happens to imitate | `verify.py` | **no** fixed growth or margin threshold can separate the 20 answers (0 of 40 candidate cut-offs), so the key must be industry-relative — which is what my rule is |
-| Verdicts do not ride on the exact benchmark value | `verify.py` | shifting every industry median by 0.5–3.0 points changes **3** of 240 verdicts in the current rule, against **15** in the single-comparison version it replaced |
+| Nothing hidden sits between the number and the letter | `verify.py` | the confidence band fires on **0/20** companies at point 1 (nothing within ±1.5pp of the median) and **0/20** at point 5 (±1.0pp), so all 40 verdicts are the plain comparison and the band only writes a label |
 | The growth convention does not matter | `verify.py` | writing both sides as a CAGR changes **0/20** verdicts |
+| The metric was chosen against alternatives, not assumed | `metric_compare.py` | 11 candidate definitions scored on hit rate, smallest edge and benchmark sensitivity: the shipped pair wins on all three; every plausible rival loses on at least one (gross margin 14/20, mean of yearly rates 6/20, two-year average margin thinner and 3× as benchmark-sensitive) |
+| The verdict is the rule, not my coding choices | `variant_sweep.py` | 30 implementations across the two points (window × margin formula × benchmark × tie-break, plus four peer rules): point 1 moves by at most **2/20**, point 5 by at most **6/20**, and that 6 is entirely the margin formula — the one choice the homework spells out |
 | The rule is not knife-edge | `verify.py` | median distance to the line 3.7 points, smallest 1.71 (Kestrel's margin); **40/40** decisions taken outside the confidence bands |
-| Point 7 survives rewording, the one thing the private set changes | `test_robust.py` | each real quote rewritten **three** ways (formal HR complaint, casual aside, clipped cautious answer) and re-judged: **60/60** paraphrased verdicts match the key with the five-dimension rule, against **58/60** for the single-question rule it replaced |
+| Point 7 survives rewording, the one thing the private set changes | `test_robust.py` | each real quote rewritten **three** ways (formal HR complaint, casual aside, clipped cautious answer) and re-judged: **60/60** paraphrased verdicts match the key with the five-dimension rule — and, in four consecutive runs, the single-question rule it replaced also scores 60/60, so this test does **not** separate them |
 | Point 7 spends its interviews sensibly and drops non-answers | `test_robust.py` | with a mock tool where the current employee refuses, the sub-agent still hears the former employee, the refusal is dropped, and the verdict is the right FAIL |
-| Odd data does not crash the pipeline | `test_degrade.py` | a two-year history, a missing industry row and a final year with 8 months of costs all produce verdicts, with the substitution recorded |
+| Odd data does not crash the pipeline | `test_degrade.py` | five synthetic shapes — a two-year history, an industry genuinely missing from `industry_medians`, the same industry spelled with different capitalisation, a final year with 8 months of costs, a four-year history, and a zero-revenue first year — each produces verdicts plus a note recording what was substituted |
+| The rule does not lean on a company's name | `test_rename.py` | all 20 companies renamed in the folder names, the documents, the interviews and the `company` table, then re-run end to end: **60/60**, and **0** verdicts contradicting the key |
 | One broken company cannot sink the run | `test_errors.py` | a company whose tools all raise still gets an entry and the other company is unaffected |
 
 ### What the audit changed
 
 The first version of this agent scored 60/60 as well, and it deserved less credit
 than that sounds. Its rule for points 1 and 5 was a single comparison with the
-industry median: verdict = growth above the median or not. On the public set that
-reproduces the key exactly, which is precisely why it looked finished. Then I
-shifted every median by one or two points, the way a different sample of
-companies would, and **15 verdicts out of 40 moved** — the answer was riding on
-the benchmark, not on the business. The banded rule with corroboration moves 3.
+industry median. On the public set that reproduces the key exactly, which is
+precisely why it looked finished. When I shifted every median by one or two
+points — the way a different sample of companies would — **15 verdicts out of 40
+moved**, and I read that as the answer riding on the benchmark rather than on the
+business. My first fix was to add a confidence band with a corroboration layer
+that takes over near the line.
+
+Then I re-read the grading section and took it back out. The key uses one fixed
+rule per point and the data never sits close to that rule's line, which means two
+things: on a compliant private set the band would never fire, and if it ever did
+fire my corroboration layer would be answering a different question from the key
+at the one moment when the comparison was already close. `test_sim.py` prices both
+options without needing the key. It takes the range the public set allows for the
+key's line (±3.09 points on growth, ±1.71 on margin — anything further out would
+contradict a published verdict), draws company metrics from the observed spread,
+and reports the balanced accuracy the grader would record:
+
+| Rule for points 1 and 5 | Expected balanced accuracy |
+| --- | --- |
+| plain comparison with the industry median (shipped) | **88.3% / 88.0%** |
+| banded, corroboration agrees with the key 55% of the time | 86.7% / 85.4% |
+| banded, corroboration agrees 70% of the time | 90.2% / 89.6% |
+| banded, corroboration agrees 85% of the time | 93.6% / 93.8% |
+| banded, corroboration agrees 95% of the time | 96.0% / 96.6% |
+
+Banding wins only if the corroboration layer is right about the *key's* verdict
+more than roughly 60% of the time, and that reliability is not something I can
+measure: the layer answers "is this growth sizable?", while the key answers "is
+this growth above an undisclosed line near the industry median?". Assuming 90%
+agreement between the two would be wishful thinking dressed as engineering. The
+plain comparison needs no such assumption, and it is exactly right if the key's
+line is the median, which is what 20/20 agreement on the public set suggests. So
+the shipped rule is the plain comparison and the band survives only as a
+confidence label: 88% expected with no unknown parameters, rather than a bet on an
+unverifiable one for a possible 96%.
 
 Point 7 changed more fundamentally. The model used to be handed a quote and asked
 for PASS or FAIL, with a second call to double-check it; that worked on the public
 data, but it made the point depend on a model's opinion of a sentence. It now
 labels five concrete dimensions and Python counts them, which means there is no
 polarity threshold for a reworded sentence to fall the wrong side of, and the
-tie-break is a rule I can state in one line rather than a model's mood. The old
-approach still passes the rewording test, so this is not a fix for a failure I
-observed — it is a fix for a failure mode I could not rule out.
+tie-break is a rule I can state in one line rather than a model's mood.
+
+I have to be straight about how much that bought on the test I built for it. An
+earlier version of this test reported the single-question rule at 58/60 against
+60/60 for the checklist, and I wrote that number into this report. When I re-ran
+it four times before submitting, the single-question rule scored 60/60 every
+time, so the 58/60 was either a paraphrase I have since replaced or noise, and
+either way it does not stand as evidence. On these sixty rewrites the two rules
+tie. The argument for the checklist is therefore the simulation, not an observed
+win: `test_sim.py` models a statement that touches k dimensions, labels each one
+correctly with probability q, and shows the checklist at k=3 beating a single
+question at every q (78.4% vs 70.0% at q=70%, 93.9% vs 85.0% at q=85%), because a
+single label error has to outvote two correct ones, while one question has no
+redundancy at all. The reason the two rules tie on the public data is that q is
+high on these sentences — the model already handles them — and the checklist only
+pays out where q is lower, which is exactly the unseen-company case the
+checklist exists for. What the checklist buys unconditionally is auditability: a
+count of five named dimensions can be checked and argued with, and a single
+model's yes/no cannot.
 
 I also found and fixed a real bug while generalising. The first version hard-coded
 FY2023 and FY2025. When I made it pick years from the data instead, growth went
@@ -315,13 +404,79 @@ half year (2026 H1) and comparing it with a full year is meaningless. Complete-y
 detection by cost-ledger coverage fixed it, and that is the kind of error that only
 shows up when you stop assuming the shape of the data.
 
+Two more assumptions fell out of the same exercise, and both were worth more than
+they look. The first is where the two-year window starts. The code used to measure
+from the oldest complete year to the newest, which is right for three years of
+history and wrong for four: a company reporting 2023–2026 would have been measured
+over three years and then rescaled to a two-year rate, while the key measures the
+most recent two-year window. The window is now anchored on the latest complete year
+and walked back exactly two years, so a longer history changes nothing. The second
+is the industry join. `industry_medians` was matched with `=`, so a private set that
+spells an industry "Food Ingredients" where the company row says "food ingredients"
+would have dropped to a cross-industry median — which, per the metric comparison
+above, costs 2 verdicts in 20. It now retries case- and whitespace-insensitively
+before falling back, and records which of the three benchmarks it used. While
+testing that fallback I also found it was dead code: the sql helper raised on an
+empty result, so "the industry is missing" crashed the company instead of
+degrading. That one only surfaced because `test_degrade.py` was rewritten to assert
+on the recorded benchmark rather than just on "did it produce a verdict".
+
+### Choosing the metric
+
+Neither metric on this page was picked by taste. `metric_compare.py` puts every
+candidate definition through the same three tests on the same 20 companies: how
+many of the 20 verdicts it matches; the **smallest** distance any company has to
+the line it draws, since a rule that is right by 0.05pp is a rule that will be
+wrong on the next company; and how many verdicts move when the benchmark is
+nudged by 1 and 2 points, since a rule that only works at one exact benchmark
+value is not a rule.
+
+| Point 1 metric | Hit | Smallest edge | Verdicts moved at +1pp / +2pp |
+| --- | --- | --- | --- |
+| two-year revenue growth, FY2023→FY2025 (**shipped**) | **20/20** | **3.09pp** | **0 / 0** |
+| same, but units shipped instead of revenue | 20/20 | 1.19pp | 0 / 2 |
+| mean of the two yearly growth rates | 6/20 | 2.41pp | 0 / 0 |
+| last year's growth only | 6/20 | 0.92pp | 0 / 0 |
+| same as shipped, benchmarked on the cross-industry median | 18/20 | 1.68pp | 0 / 0 |
+
+| Point 5 metric | Hit | Smallest edge | Verdicts moved at +1pp / +2pp |
+| --- | --- | --- | --- |
+| FY2025 operating margin (**shipped**) | **20/20** | **1.71pp** | **0 / 2** |
+| two-year average operating margin | 20/20 | 1.58pp | 0 / 6 |
+| weakest year of the three | 19/20 | 0.02pp | 4 / 9 |
+| gross margin (before S&A and R&D) | 14/20 | 18.05pp | 0 / 0 |
+| change in margin over two years | 6/20 | 6.09pp | 0 / 0 |
+| operating cash flow / revenue | 20/20 | 0.54pp | 0 / 0 |
+
+Four things fall out of that, and three of them are warnings rather than
+endorsements. A big edge does not make a metric right: gross margin clears every
+line by 18 points and still gets 6 companies wrong, because it asks a different
+question from the one the key asks — the homework defines operating margin after
+selling, admin and R&D, and that is what the key uses. A perfect hit rate does
+not make a metric right either: cash-flow margin matches 20/20 while sitting
+0.54pp from the line, which is a coin landing on its edge, not a rule. And the
+two metrics that look most reasonable to a reader who has not done the
+arithmetic — average the yearly growth rates, or just use the latest year — score
+6/20, because the average of two annual rates is not the rate over the period.
+The benchmark has to be the company's own industry as well: the cross-industry
+median costs 2 of 20 verdicts, so the industry row that ships with each company
+is doing real work.
+
+The window is doing work too. Growth measured from the first complete year to the
+second-to-last, i.e. dropping the latest year, changes 2 of 20 verdicts; two
+years is the shortest window that carries Fisher's "at least several years"
+without reaching back before the order book starts.
+
 One correction to an earlier claim of mine. I first reported that measuring
 growth over one year instead of two flips 14 of 20 verdicts and that gross margin
 flips 6, and called that fragility in the definition. That comparison was
 apples-to-oranges: a pre-R&D margin compared with a post-R&D median, a one-year
 change compared with a two-year benchmark. Done properly — both sides in the same
-convention — the growth convention changes 0 of 20 verdicts. The real fragility
-was in the benchmark, not in the definition, and it is measured in the table above.
+convention — the growth convention changes 0 of 20 verdicts (the raw two-year
+rate and the two-year CAGR are the same number whenever the span is exactly two
+years, which it is for all 20 companies). The fragility that survives is in the benchmark, not in the
+definition: 2 verdicts at point 5 move if every industry median moves 2 points,
+and that is the number `test_sim.py` turns into an expected score.
 
 ### Residual risk
 

@@ -101,47 +101,15 @@ for point, key, label in [(1, "growth", "growth %"), (5, "margin", "margin %")]:
 
 print()
 print("=" * 78)
-print("3. TOLERANCE TO BENCHMARK ERROR: shift the industry median, count changed verdicts")
+print("3. BAND COVERAGE: could a corroboration layer ever have fired?")
 print("=" * 78)
-
-
-def old_market(d, delta):
-    """The one-comparison rule: verdict = growth above the median or not."""
-    return "PASS" if d["growth"] >= d["med_g"] + delta else "FAIL"
-
-
-def new_market(d, delta):
-    """The shipped rule: outside the band the ratio decides, inside it corroboration does."""
-    gap = d["growth"] - (d["med_g"] + delta)
-    if abs(gap) >= hw3.GROWTH_BAND:
-        return "PASS" if gap > 0 else "FAIL"
-    return d["j1"]["verdict"]
-
-
-def old_margin(d, delta):
-    return "PASS" if d["margin"] >= d["med_m"] + delta else "FAIL"
-
-
-def new_margin(d, delta):
-    gap = d["margin"] - (d["med_m"] + delta)
-    if abs(gap) >= hw3.MARGIN_BAND:
-        return "PASS" if gap > 0 else "FAIL"
-    return d["j5"]["verdict"]
-
-
-print(f"   {'median shifted by':20}{'p1 old':>10}{'p1 new':>10}{'p5 old':>10}{'p5 new':>10}")
-totals = {"1 old": 0, "1 new": 0, "5 old": 0, "5 new": 0}
-for delta in (-3.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.0):
-    o1 = sum(old_market(d, delta) != old_market(d, 0) for d in data.values())
-    n1 = sum(new_market(d, delta) != new_market(d, 0) for d in data.values())
-    o5 = sum(old_margin(d, delta) != old_margin(d, 0) for d in data.values())
-    n5 = sum(new_margin(d, delta) != new_margin(d, 0) for d in data.values())
-    totals["1 old"] += o1
-    totals["1 new"] += n1
-    totals["5 old"] += o5
-    totals["5 new"] += n5
-    print(f"   {delta:+.1f} points{'':9}{o1:>10}{n1:>10}{o5:>10}{n5:>10}")
-print(f"   {'total':20}{totals['1 old']:>10}{totals['1 new']:>10}{totals['5 old']:>10}{totals['5 new']:>10}")
+inside_g = sum(abs(d["growth"] - d["med_g"]) < hw3.GROWTH_BAND for d in data.values())
+inside_m = sum(abs(d["margin"] - d["med_m"]) < hw3.MARGIN_BAND for d in data.values())
+print(f"   point 1: {inside_g}/20 companies inside +/-{hw3.GROWTH_BAND}pp of the median")
+print(f"   point 5: {inside_m}/20 companies inside +/-{hw3.MARGIN_BAND}pp of the median")
+print("   -> a rule that overrode the comparison near the line would never have fired on")
+print("      this data, which is why the shipped verdict is the comparison itself; the band")
+print("      is only used to print a confidence label. test_sim.py prices the alternative.")
 
 print()
 print("=" * 78)
