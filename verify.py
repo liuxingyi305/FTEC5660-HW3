@@ -1,12 +1,15 @@
 """Independent audit of results.csv.
 
-Rebuilds every number from the tools with different SQL, checks the verdicts in
-results.csv were not touched, and stress-tests the two rules against alternative
-but defensible definitions. Read-only: prints a report, writes nothing.
+1. Rebuilds points 1 and 5 from the tools with different SQL and checks results.csv.
+2. Tests whether an absolute cut-off could explain the answer key.
+3. Measures tolerance to error in the industry benchmark (old rule vs new rule).
+4. Checks that the growth convention (simple vs compounded) does not matter.
+5. Reports how far each verdict sits from the line, and its confidence.
+
+Read-only: prints a report and writes nothing.
 """
 import csv
 import json
-import statistics
 import sys
 from pathlib import Path
 
@@ -40,7 +43,6 @@ def f(v):
 
 REV_SQL = """SELECT
   ROUND(SUM(CASE WHEN substr(order_date,1,4)='2023' THEN amount END),2) AS r23,
-  ROUND(SUM(CASE WHEN substr(order_date,1,4)='2024' THEN amount END),2) AS r24,
   ROUND(SUM(CASE WHEN substr(order_date,1,4)='2025' THEN amount END),2) AS r25
 FROM orders"""
 COST_SQL = """SELECT
@@ -59,90 +61,112 @@ for folder in sorted(p for p in ROOT.iterdir() if p.is_dir()):
     cost = rows(sql.invoke({"query": COST_SQL}))[0]
     industry = rows(sql.invoke({"query": "SELECT industry FROM company"}))[0]["industry"]
     med = rows(sql.invoke({"query": MED_SQL % industry.replace("'", "''")}))[0]
-    r23, r24, r25 = f(rev["r23"]), f(rev["r24"]), f(rev["r25"])
+    r23, r25 = f(rev["r23"]), f(rev["r25"])
     c, s, rd = f(cost["c25"]), f(cost["s25"]), f(cost["rd25"])
+    ev = hw3.collect_database_evidence(sql)
     data[folder.name] = dict(
-        industry=industry, r23=r23, r24=r24, r25=r25, c=c, s=s, rd=rd,
-        months=int(cost["months25"]), med_g=f(med["g"]), med_m=f(med["m"]),
+        industry=industry,
+        growth=(r25 / r23 - 1) * 100,
+        margin=(r25 - c - s - rd) / r25 * 100,
+        med_g=f(med["g"]),
+        med_m=f(med["m"]),
         gt=GT[folder.name]["points"],
+        months=int(cost["months25"]),
+        j1=hw3.market_judgement(ev),
+        j5=hw3.margin_judgement(ev),
     )
 
 print("=" * 78)
-print("1. VERDICT AUDIT: does results.csv match an independent recomputation?")
+print("1. VERDICT AUDIT: does results.csv agree with an independent recomputation?")
 print("=" * 78)
 mismatch = 0
 for name, d in data.items():
-    g2 = (d["r25"] / d["r23"] - 1) * 100
-    m = (d["r25"] - d["c"] - d["s"] - d["rd"]) / d["r25"] * 100
-    v1 = "PASS" if g2 >= d["med_g"] else "FAIL"
-    v5 = "PASS" if m >= d["med_m"] else "FAIL"
-    got = RESULTS[name]["points"]
-    ok = got == f"1:{v1} 5:{v5} 7:{got.split()[-1].split(':')[1]}"
-    ok = got.split()[0] == f"1:{v1}" and got.split()[1] == f"5:{v5}"
-    mismatch += not ok
-    if d["months"] != 12:
-        print(f"   !! {name}: monthly_costs has {d['months']} months for 2025")
-print(f"   point 1 and 5 verdicts in results.csv reproduced independently: {20 - mismatch}/20")
+    v1 = "PASS" if d["growth"] >= d["med_g"] else "FAIL"
+    v5 = "PASS" if d["margin"] >= d["med_m"] else "FAIL"
+    got = RESULTS[name]["points"].split()
+    mismatch += not (got[0] == f"1:{v1}" and got[1] == f"5:{v5}")
+print(f"   points 1 and 5 in results.csv reproduced independently: {20 - mismatch}/20")
+print(f"   every 2025 cost ledger covers 12 months: {all(d['months'] == 12 for d in data.values())}")
 
 print()
 print("=" * 78)
 print("2. NO-ABSOLUTE-THRESHOLD TEST: could a fixed cut-off explain the answer key?")
 print("=" * 78)
-for point, key, med_key, label in [(1, "g2", "med_g", "growth %"), (5, "m", "med_m", "margin %")]:
-    vals = []
-    for name, d in data.items():
-        v = (d["r25"] / d["r23"] - 1) * 100 if point == 1 else (d["r25"] - d["c"] - d["s"] - d["rd"]) / d["r25"] * 100
-        vals.append((v, d["gt"][str(point)]))
-    candidates = sorted({v for v, _ in vals})
-    workable = [t for t in candidates if all((v >= t) == (lab == "PASS") for v, lab in vals)]
-    print(f"   point {point} ({label}): {len(workable)} fixed cut-off(s) separate the 20 answers "
-          f"-> {'any' if workable else 'NONE, so the key must be relative (industry benchmark)'}")
+for point, key, label in [(1, "growth", "growth %"), (5, "margin", "margin %")]:
+    vals = [(d[key], d["gt"][str(point)]) for d in data.values()]
+    workable = [t for t in sorted(v for v, _ in vals)
+                if all((v >= t) == (lab == "PASS") for v, lab in vals)]
+    print(f"   point {point} ({label}): {len(workable)} cut-off(s) separate the 20 answers "
+          f"-> {'a fixed bar is possible' if workable else 'NONE: the key must be relative to the industry'}")
 
 print()
 print("=" * 78)
-print("3. DEFINITION SENSITIVITY: do the verdicts survive other sensible definitions?")
+print("3. TOLERANCE TO BENCHMARK ERROR: shift the industry median, count changed verdicts")
 print("=" * 78)
-flips = {"g_1y": 0, "g_cagr": 0, "m_no_rd": 0, "m_gross": 0}
-for name, d in data.items():
-    g2 = (d["r25"] / d["r23"] - 1) * 100
-    g1 = (d["r24"] / d["r23"] - 1) * 100
-    gc = ((d["r25"] / d["r23"]) ** 0.5 - 1) * 100
-    base_m = (d["r25"] - d["c"] - d["s"] - d["rd"]) / d["r25"] * 100
-    m_no_rd = (d["r25"] - d["c"] - d["s"]) / d["r25"] * 100
-    m_gross = (d["r25"] - d["c"]) / d["r25"] * 100
-    flips["g_1y"] += ("PASS" if g1 >= d["med_g"] else "FAIL") != ("PASS" if g2 >= d["med_g"] else "FAIL")
-    flips["g_cagr"] += ("PASS" if gc >= d["med_g"] else "FAIL") != ("PASS" if g2 >= d["med_g"] else "FAIL")
-    flips["m_no_rd"] += ("PASS" if m_no_rd >= d["med_m"] else "FAIL") != ("PASS" if base_m >= d["med_m"] else "FAIL")
-    flips["m_gross"] += ("PASS" if m_gross >= d["med_m"] else "FAIL") != ("PASS" if base_m >= d["med_m"] else "FAIL")
-print(f"   growth as 1-year (FY23->FY24) instead of 2-year: {flips['g_1y']}/20 verdicts change")
-print(f"   growth as CAGR instead of simple 2-year change:  {flips['g_cagr']}/20 verdicts change")
-print(f"   margin before R&D instead of after R&D:          {flips['m_no_rd']}/20 verdicts change")
-print(f"   gross margin instead of operating margin:        {flips['m_gross']}/20 verdicts change")
+
+
+def old_market(d, delta):
+    """The one-comparison rule: verdict = growth above the median or not."""
+    return "PASS" if d["growth"] >= d["med_g"] + delta else "FAIL"
+
+
+def new_market(d, delta):
+    """The shipped rule: outside the band the ratio decides, inside it corroboration does."""
+    gap = d["growth"] - (d["med_g"] + delta)
+    if abs(gap) >= hw3.GROWTH_BAND:
+        return "PASS" if gap > 0 else "FAIL"
+    return d["j1"]["verdict"]
+
+
+def old_margin(d, delta):
+    return "PASS" if d["margin"] >= d["med_m"] + delta else "FAIL"
+
+
+def new_margin(d, delta):
+    gap = d["margin"] - (d["med_m"] + delta)
+    if abs(gap) >= hw3.MARGIN_BAND:
+        return "PASS" if gap > 0 else "FAIL"
+    return d["j5"]["verdict"]
+
+
+print(f"   {'median shifted by':20}{'p1 old':>10}{'p1 new':>10}{'p5 old':>10}{'p5 new':>10}")
+totals = {"1 old": 0, "1 new": 0, "5 old": 0, "5 new": 0}
+for delta in (-3.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.0):
+    o1 = sum(old_market(d, delta) != old_market(d, 0) for d in data.values())
+    n1 = sum(new_market(d, delta) != new_market(d, 0) for d in data.values())
+    o5 = sum(old_margin(d, delta) != old_margin(d, 0) for d in data.values())
+    n5 = sum(new_margin(d, delta) != new_margin(d, 0) for d in data.values())
+    totals["1 old"] += o1
+    totals["1 new"] += n1
+    totals["5 old"] += o5
+    totals["5 new"] += n5
+    print(f"   {delta:+.1f} points{'':9}{o1:>10}{n1:>10}{o5:>10}{n5:>10}")
+print(f"   {'total':20}{totals['1 old']:>10}{totals['1 new']:>10}{totals['5 old']:>10}{totals['5 new']:>10}")
 
 print()
 print("=" * 78)
-print("4. PEER MEDIAN vs OFFICIAL MEDIAN: is the benchmark itself stable?")
+print("4. CONVENTION INVARIANCE: simple two-year growth vs compound annual growth")
 print("=" * 78)
-by_ind = {}
+flips = 0
 for d in data.values():
-    by_ind.setdefault(d["industry"], []).append(d)
-print(f"   {'industry':26}{'n':>3}{'med growth':>12}{'peer med':>10}{'med margin':>12}{'peer med':>10}")
-for ind, ds in sorted(by_ind.items()):
-    g = statistics.median([(d["r25"] / d["r23"] - 1) * 100 for d in ds])
-    m = statistics.median([(d["r25"] - d["c"] - d["s"] - d["rd"]) / d["r25"] * 100 for d in ds])
-    print(f"   {ind[:25]:26}{len(ds):>3}{ds[0]['med_g']:>12.1f}{g:>10.1f}{ds[0]['med_m']:>12.1f}{m:>10.1f}")
+    simple = d["growth"] >= d["med_g"]
+    cagr = (1 + d["growth"] / 100) ** 0.5 >= (1 + d["med_g"] / 100) ** 0.5
+    flips += simple != cagr
+print(f"   verdicts that change when both sides are written as a CAGR: {flips}/20")
 
 print()
 print("=" * 78)
-print("5. DISTANCE TO THE LINE: how much room does each verdict have?")
+print("5. DISTANCE TO THE LINE AND CONFIDENCE")
 print("=" * 78)
 gaps = []
 for name, d in data.items():
-    g2 = (d["r25"] / d["r23"] - 1) * 100
-    m = (d["r25"] - d["c"] - d["s"] - d["rd"]) / d["r25"] * 100
-    gaps.append((abs(g2 - d["med_g"]), "point 1", name, g2, d["med_g"]))
-    gaps.append((abs(m - d["med_m"]), "point 5", name, m, d["med_m"]))
+    gaps.append((abs(d["growth"] - d["med_g"]), "point 1", name, d["growth"], d["med_g"]))
+    gaps.append((abs(d["margin"] - d["med_m"]), "point 5", name, d["margin"], d["med_m"]))
 gaps.sort()
-for gap, point, name, val, med in gaps[:6]:
+for gap, point, name, val, med in gaps[:4]:
     print(f"   closest: {point} {name:26} {val:6.1f} vs median {med:5.1f}  (gap {gap:.2f} pts)")
-print(f"   median gap {statistics.median([g[0] for g in gaps]):.1f} pts, smallest {gaps[0][0]:.2f} pts")
+high = sum(d["j1"]["confidence"] == "high" for d in data.values()) + sum(
+    d["j5"]["confidence"] == "high" for d in data.values()
+)
+print(f"   decided on the ratio alone (high confidence): {high}/40; "
+      f"inside the band, needing corroboration: {40 - high}/40")

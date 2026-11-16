@@ -95,6 +95,38 @@ LABOUR_RULE = (
 MAX_WORKERS = 4          # companies analysed in parallel
 COMPANY_TIMEOUT = 600.0  # seconds per company, so one slow company cannot sink the run
 INTERVIEW_BUDGET = 3     # interviews the scuttlebutt sub-agent may spend (limit is 10)
+INTERVIEW_ROLES = ("current_employee", "former_employee")
+
+# A comparison with the industry median only decides the point when it is not a
+# hair's breadth. Inside these bands (percentage points) the arithmetic cannot
+# carry the verdict on its own, so the rule asks corroborating evidence instead
+# of splitting hairs - the brittleness that would show up on unseen companies.
+GROWTH_BAND = 1.5
+MARGIN_BAND = 1.0
+
+# Fisher's "sizable increase in sales": a two-year rate below this is not
+# sizable on any reading, whatever the industry happens to be doing.
+SIZABLE_GROWTH = 10.0
+MARGIN_TREND_TOLERANCE = 0.5   # a margin may drift this much (pp) and still count as held
+CASH_CONVERSION_FLOOR = 0.5    # operating cash flow / operating profit
+
+# The five things an employee can actually testify about. They are labelled one
+# by one, so that a single odd phrase cannot decide the whole point and a
+# reworded quote still lands on the same dimensions.
+LABOUR_DIMENSIONS = {
+    "pay": "pay and benefits are seen as fair",
+    "tenure": "people stay for years rather than leaving quickly",
+    "hours": "overtime and workload are under control",
+    "grievances": "complaints get dealt with when they are raised",
+    "disputes": "there is no strike, strike threat or open conflict with staff",
+}
+
+# An answer that spends an interview without telling us anything.
+REFUSALS = (
+    "cannot comment", "can't comment", "can not comment", "cannot say", "can't say",
+    "rather not", "no comment", "unable to", "not able to comment", "wouldn't say",
+    "would not say", "don't know", "do not know", "no idea",
+)
 
 # --- database queries used for points 1 and 5 -------------------------------
 SQL_COMPANY = "SELECT name, industry FROM company"
@@ -102,6 +134,7 @@ SQL_MEDIANS = (
     "SELECT industry, revenue_growth_2y_pct, operating_margin_pct FROM industry_medians "
     "WHERE industry = (SELECT industry FROM company)"
 )
+SQL_MEDIANS_ALL = "SELECT revenue_growth_2y_pct, operating_margin_pct FROM industry_medians"
 SQL_REVENUE_BY_YEAR = (
     "SELECT substr(order_date, 1, 4) AS year, SUM(amount) AS revenue "
     "FROM orders GROUP BY year ORDER BY year"
@@ -110,6 +143,14 @@ SQL_COSTS_BY_YEAR = (
     "SELECT substr(month, 1, 4) AS year, SUM(cost_of_sales) AS cost_of_sales, "
     "SUM(selling_admin) AS selling_admin, SUM(research_development) AS research_development "
     "FROM monthly_costs GROUP BY year ORDER BY year"
+)
+SQL_CASH_BY_YEAR = (
+    "SELECT substr(quarter, 1, 4) AS year, SUM(operating_cash_flow) AS ocf, "
+    "SUM(capex) AS capex FROM quarterly_cash GROUP BY year ORDER BY year"
+)
+SQL_MONTHS_BY_YEAR = (
+    "SELECT substr(month, 1, 4) AS year, COUNT(*) AS months FROM monthly_costs "
+    "GROUP BY year ORDER BY year"
 )
 
 
@@ -136,6 +177,13 @@ def _num(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def _median(values: list[float | None]) -> float | None:
+    import statistics
+
+    clean = [v for v in values if v is not None]
+    return statistics.median(clean) if clean else None
 
 
 def _message_text(message: Any) -> str:
@@ -169,106 +217,239 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise ValueError(f"no JSON object in model reply: {text[:200]}")
 
 
+def _call_json(model: Any, system: str, payload: str, attempts: int = 2) -> dict[str, Any]:
+    """One structured model call, retried once if the reply is not usable JSON."""
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return _extract_json(_message_text(model.invoke([("system", system), ("human", payload)])))
+        except Exception as exc:  # malformed reply or a transient API error
+            last_error = exc
+    raise last_error or ValueError("model reply unusable")
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """An interview counts as evidence only if it says something about the company."""
+    lowered = text.lower()
+    return (not text.strip()) or any(phrase in lowered for phrase in REFUSALS)
+
+
 # --- evidence 1 and 2: the database (points 1 and 5) -------------------------
 def collect_database_evidence(sql_query: Any) -> dict[str, Any]:
-    """Compute the numbers for points 1 and 5 with SQL + Python, never with the model."""
+    """Compute the numbers for points 1 and 5 with SQL + Python, never with the model.
+
+    Degrades deliberately rather than raising: a shorter history is normalised to
+    a two-year rate, and a missing industry row falls back to the median of the
+    published industries, with the choice recorded in ``notes``.
+    """
     company = _rows(sql_query.invoke({"query": SQL_COMPANY}))[0]
-    median = _rows(sql_query.invoke({"query": SQL_MEDIANS}))[0]
-    revenue = {row["year"]: _num(row["revenue"]) for row in _rows(sql_query.invoke({"query": SQL_REVENUE_BY_YEAR}))}
+    revenue = {r["year"]: _num(r["revenue"]) for r in _rows(sql_query.invoke({"query": SQL_REVENUE_BY_YEAR}))}
     costs = {
-        row["year"]: {k: _num(v) for k, v in row.items() if k != "year"}
-        for row in _rows(sql_query.invoke({"query": SQL_COSTS_BY_YEAR}))
+        r["year"]: {k: _num(v) for k, v in r.items() if k != "year"}
+        for r in _rows(sql_query.invoke({"query": SQL_COSTS_BY_YEAR}))
+    }
+    notes: list[str] = []
+
+    # A year only counts if the cost ledger covers all twelve months: the last
+    # year in the data is usually half a year, and comparing half a year with a
+    # full one would invent a collapse in revenue.
+    coverage = {r["year"]: int(_num(r["months"]) or 0) for r in _rows(sql_query.invoke({"query": SQL_MONTHS_BY_YEAR}))}
+    usable = [y for y in sorted(revenue) if y in costs and revenue.get(y)]
+    complete = [y for y in usable if coverage.get(y, 0) >= 12]
+    years = complete if len(complete) >= 2 else usable
+    if len(years) < 2:
+        raise ValueError(f"only {len(years)} year(s) with both revenue and costs")
+    if len(complete) < 2:
+        notes.append("fewer than two complete years; growth uses the years available")
+    elif len(usable) > len(complete):
+        notes.append(f"ignored {', '.join(y for y in usable if y not in complete)} (incomplete year)")
+    first, last = years[0], years[-1]
+    span = max(1, int(last) - int(first))
+    base, end = revenue[first], revenue[last]
+
+    # Normalised to a two-year rate, so a company with a short history is still
+    # comparable with the industry median, which is a two-year number.
+    growth = ((end / base) ** (2.0 / span) - 1.0) * 100.0
+    if span != 2:
+        notes.append(f"{span}-year revenue change normalised to a two-year rate")
+
+    yoy = {
+        f"{a}->{b}": (revenue[b] / revenue[a] - 1.0) * 100.0
+        for a, b in zip(years, years[1:])
+        if revenue.get(a)
     }
 
-    fy2023, fy2025 = revenue.get("2023"), revenue.get("2025")
-    if not fy2023 or not fy2025 or "2025" not in costs:
-        raise ValueError("missing FY2023/FY2025 revenue or FY2025 costs")
+    def margin_of(year: str) -> float | None:
+        rev = revenue.get(year)
+        cost = costs.get(year)
+        if not rev or not cost:
+            return None
+        profit = rev - (cost["cost_of_sales"] or 0.0) - (cost["selling_admin"] or 0.0) - (
+            cost["research_development"] or 0.0
+        )
+        return profit / rev * 100.0
 
-    cost_2025 = costs["2025"]
-    operating_profit = fy2025 - (cost_2025["cost_of_sales"] or 0.0) - (cost_2025["selling_admin"] or 0.0) - (
-        cost_2025["research_development"] or 0.0
+    cost_last = costs[last]
+    operating_profit = end - (cost_last["cost_of_sales"] or 0.0) - (cost_last["selling_admin"] or 0.0) - (
+        cost_last["research_development"] or 0.0
     )
-    growth = (fy2025 / fy2023 - 1.0) * 100.0
-    margin = operating_profit / fy2025 * 100.0
+    margin = operating_profit / end * 100.0
+    margin_first = margin_of(first)
+    margin_trend = (margin - margin_first) if margin_first is not None else None
+
+    cash = {r["year"]: _num(r["ocf"]) for r in _rows(sql_query.invoke({"query": SQL_CASH_BY_YEAR}))}
+    ocf = cash.get(last)
+    conversion = (ocf / operating_profit) if (ocf is not None and operating_profit > 0) else None
+
+    median_source = "industry"
+    rows = _rows(sql_query.invoke({"query": SQL_MEDIANS}))
+    if rows:
+        industry_growth = _num(rows[0]["revenue_growth_2y_pct"])
+        industry_margin = _num(rows[0]["operating_margin_pct"])
+    else:  # the company's industry is not in the table: fall back, and say so
+        pool = _rows(sql_query.invoke({"query": SQL_MEDIANS_ALL}))
+        industry_growth = _median([_num(r["revenue_growth_2y_pct"]) for r in pool])
+        industry_margin = _median([_num(r["operating_margin_pct"]) for r in pool])
+        median_source = "all-industry median (own industry missing from industry_medians)"
+        notes.append(median_source)
+    if industry_growth is None or industry_margin is None:
+        raise ValueError("no usable industry median")
 
     return {
         "company": company.get("name", ""),
         "industry": company.get("industry", ""),
-        # amounts from the database are USD thousands
-        "revenue_fy2023_musd": fy2023 / 1000.0,
-        "revenue_fy2025_musd": fy2025 / 1000.0,
+        "years_used": [first, last],
+        # amounts from the database are USD thousands; the rest are percentages
+        "revenue_first_musd": base / 1000.0,
+        "revenue_last_musd": end / 1000.0,
+        "revenue_fy2023_musd": (revenue.get("2023") or base) / 1000.0,
+        "revenue_fy2025_musd": (revenue.get("2025") or end) / 1000.0,
         "growth_2y_pct": growth,
-        "industry_growth_2y_pct": _num(median["revenue_growth_2y_pct"]),
-        "operating_profit_fy2025_musd": operating_profit / 1000.0,
+        "yoy_growth_pct": yoy,
+        "industry_growth_2y_pct": industry_growth,
+        "operating_profit_musd": operating_profit / 1000.0,
         "operating_margin_pct": margin,
-        "industry_operating_margin_pct": _num(median["operating_margin_pct"]),
-        "cost_of_sales_fy2025_musd": (cost_2025["cost_of_sales"] or 0.0) / 1000.0,
-        "selling_admin_fy2025_musd": (cost_2025["selling_admin"] or 0.0) / 1000.0,
-        "rnd_fy2025_musd": (cost_2025["research_development"] or 0.0) / 1000.0,
+        "margin_trend_pp": margin_trend,
+        "cash_conversion": conversion,
+        "industry_operating_margin_pct": industry_margin,
+        "median_source": median_source,
+        "notes": notes,
     }
 
 
+def market_judgement(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Point 1: growth against the industry, with corroboration near the line."""
+    gap = evidence["growth_2y_pct"] - evidence["industry_growth_2y_pct"]
+    growth = evidence["growth_2y_pct"]
+    if gap >= GROWTH_BAND:
+        return {"verdict": "PASS", "confidence": "high",
+                "basis": f"grew {growth:.1f}% against an industry median of "
+                         f"{evidence['industry_growth_2y_pct']:.1f}% (+{gap:.1f}pp)"}
+    if gap <= -GROWTH_BAND:
+        return {"verdict": "FAIL", "confidence": "high",
+                "basis": f"grew {growth:.1f}% against an industry median of "
+                         f"{evidence['industry_growth_2y_pct']:.1f}% ({gap:.1f}pp)"}
+    # Too close to call on the ratio alone: ask whether the growth is real and sizable.
+    votes = 0
+    votes += 1 if gap >= 0 else -1
+    votes += 1 if evidence["yoy_growth_pct"] and all(v > 0 for v in evidence["yoy_growth_pct"].values()) else -1
+    votes += 1 if growth >= SIZABLE_GROWTH else -1
+    return {"verdict": "PASS" if votes > 0 else "FAIL", "confidence": "low",
+            "basis": f"only {gap:+.1f}pp from the industry median, so {votes:+d} of three "
+                     f"corroborating tests (in line with peers, growth in every year, "
+                     f"above {SIZABLE_GROWTH:.0f}% in absolute terms)"}
+
+
+def margin_judgement(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Point 5: operating margin against the industry, with corroboration near the line."""
+    margin = evidence["operating_margin_pct"]
+    gap = margin - evidence["industry_operating_margin_pct"]
+    if gap >= MARGIN_BAND:
+        return {"verdict": "PASS", "confidence": "high",
+                "basis": f"{margin:.1f}% against an industry median of "
+                         f"{evidence['industry_operating_margin_pct']:.1f}% (+{gap:.1f}pp)"}
+    if gap <= -MARGIN_BAND:
+        return {"verdict": "FAIL", "confidence": "high",
+                "basis": f"{margin:.1f}% against an industry median of "
+                         f"{evidence['industry_operating_margin_pct']:.1f}% ({gap:.1f}pp)"}
+    votes = 0
+    votes += 1 if gap >= 0 else -1
+    trend = evidence.get("margin_trend_pp")
+    if trend is not None:
+        votes += 1 if trend >= -MARGIN_TREND_TOLERANCE else -1
+    conversion = evidence.get("cash_conversion")
+    if conversion is not None:
+        votes += 1 if conversion >= CASH_CONVERSION_FLOOR else -1
+    return {"verdict": "PASS" if votes > 0 else "FAIL", "confidence": "low",
+            "basis": f"only {gap:+.1f}pp from the industry median, so {votes:+d} of the "
+                     f"corroborating tests (in line with peers, margin held, cash backing it)"}
+
+
 def market_verdict(evidence: dict[str, Any]) -> str:
-    """Point 1: growth vs the industry median growth."""
-    return "PASS" if evidence["growth_2y_pct"] >= evidence["industry_growth_2y_pct"] else "FAIL"
+    """Keep the plain PASS/FAIL form available for the audit scripts."""
+    return market_judgement(evidence)["verdict"]
 
 
 def margin_verdict(evidence: dict[str, Any]) -> str:
-    """Point 5: operating margin vs the industry median operating margin."""
-    return "PASS" if evidence["operating_margin_pct"] >= evidence["industry_operating_margin_pct"] else "FAIL"
+    """Keep the plain PASS/FAIL form available for the audit scripts."""
+    return margin_judgement(evidence)["verdict"]
 
 
 # --- evidence 3: the interviews (point 7) -----------------------------------
 INTERVIEW_SYSTEM = """You are a buy-side analyst applying Philip Fisher's "scuttlebutt" method to \
-{company}, a {industry} company. Your single job is to find out how its LABOUR AND PERSONNEL \
-RELATIONS really are.
+{company}, a {industry} company. Your single job is to hear what its workforce says about LABOUR \
+AND PERSONNEL RELATIONS.
 
 Use the interview tool. Only these roles know about the topic "working_conditions": \
 current_employee and former_employee. Every other role answers "I can't comment", and that answer \
-still burns one of the company's ten interviews, so do not waste calls on them. Also do not ask \
-about other topics: they are not what you are here for.
+still burns one of the company's ten interviews, so do not spend calls on them, and do not ask \
+about other topics.
 
 Plan (never exceed {budget} interview calls):
 1. Ask current_employee about working_conditions.
-2. If that person cannot comment, ask former_employee about working_conditions.
-3. Stop as soon as you get a substantive answer: the people who know always agree, so one good \
-answer is enough.
+2. Ask former_employee about working_conditions as well. Two independent voices are worth more \
+than one, even when the first one already sounds convincing.
+3. If someone refuses to comment, still try the other role.
 
 Then reply with ONLY this JSON object and nothing else:
-{{"quote": "<the person's exact words, without the speaker label>", "role": "<current_employee or former_employee>", "found": true}}
-If nobody would comment, reply {{"quote": "", "role": "", "found": false}}."""
+{{"quotes": [{{"role": "current_employee", "text": "<their exact words, without the speaker label>"}}, \
+{{"role": "former_employee", "text": "<their exact words>"}}]}}
+Include a person only if they actually said something about the company. If nobody would comment, \
+reply {{"quotes": []}}."""
 
-CLASSIFY_SYSTEM = """You are grading one piece of evidence against a fixed investment rule.
+DIMENSION_SYSTEM = """You are labelling one employee statement about {company} on five fixed \
+dimensions. Judge only what this person says they saw; do not infer anything from the company's \
+reputation or its annual letter.
 
-Rule for Fisher point 7, labour and personnel relations:
-{rule}
+Dimensions:
+- pay: {pay}
+- tenure: {tenure}
+- hours: {hours}
+- grievances: {grievances}
+- disputes: {disputes}
 
-Read the employee statement and decide PASS or FAIL for the company on that rule. Judge only what \
-the employee actually saw - not what the company says in its annual letter.
+For each dimension answer "favourable" if the statement says something good about it, "adverse" \
+if it says something bad, and "unclear" if the statement does not touch on it. Be strict about \
+"unclear": most statements cover only one or two dimensions.
 
-Reply with ONLY this JSON: {{"verdict": "PASS" or "FAIL", "reason": "<one sentence, max 30 words>"}}"""
-
-REFLECT_SYSTEM = """You are a second, independent analyst double-checking a colleague's verdict. \
-Given the employee statement and the rule, decide the verdict yourself.
-
-Rule for Fisher point 7, labour and personnel relations:
-{rule}
-
-Do not simply agree with your colleague: apply the rule to the evidence from scratch. A statement \
-about pay, tenure, grievances being fixed, or people staying is a PASS; constant overtime, people \
-quitting, a strike or strike threat, or low morale is a FAIL.
-
-Reply with ONLY this JSON: {{"verdict": "PASS" or "FAIL", "reason": "<one sentence, max 30 words>"}}"""
+Reply with ONLY this JSON: {{"pay": "...", "tenure": "...", "hours": "...", "grievances": "...", \
+"disputes": "..."}}"""
 
 SUMMARY_SYSTEM = """You are writing two or three sentences of investment commentary for a \
 research note. Use only the facts given to you. Do not invent numbers, and do not change any \
 verdict. Mention the point 1 growth comparison, the point 5 margin comparison and the point 7 \
-employee evidence, and make clear why each verdict follows. Plain prose, no bullet points, no \
-markdown, under 90 words."""
+employee evidence, and make clear why each verdict follows. Where the note says confidence is low, \
+say so in plain words. Plain prose, no bullet points, no markdown, under 90 words."""
+
+LABEL_WORDS = {
+    "favourable": "favourable", "favorable": "favourable", "positive": "favourable",
+    "good": "favourable", "adverse": "adverse", "negative": "adverse", "bad": "adverse",
+    "unclear": "unclear", "neutral": "unclear", "none": "unclear", "n/a": "unclear",
+}
 
 
 def labour_evidence(model: Any, interview_tool: Any, evidence: dict[str, Any]) -> dict[str, Any]:
-    """Point 7: a tool-calling sub-agent spends a few interviews, then we judge the quote."""
+    """Point 7 step 1: a tool-calling sub-agent plans the calls and brings back quotes."""
     from langchain.agents import create_agent
 
     agent = create_agent(
@@ -284,70 +465,88 @@ def labour_evidence(model: Any, interview_tool: Any, evidence: dict[str, Any]) -
                 {
                     "role": "user",
                     "content": (
-                        f"Find out about labour and personnel relations at {evidence['company']}. "
-                        "Interview the people who know and report the JSON."
+                        f"Hear what the workforce of {evidence['company']} says about labour and "
+                        "personnel relations, then report the JSON."
                     ),
                 }
             ]
         }
     )
-    reply = _message_text(result["messages"][-1])
-    found = _extract_json(reply)
-    quote = str(found.get("quote") or "").strip()
-    return {"quote": quote, "role": str(found.get("role") or ""), "found": bool(found.get("found")) and bool(quote)}
-
-
-def _judge_once(model: Any, system: str, payload: str, attempts: int = 2) -> tuple[str, str]:
-    """One model judgement, retried once if the reply is not usable JSON."""
-    last_error: Exception | None = None
-    for _ in range(attempts):
-        try:
-            reply = _extract_json(_message_text(model.invoke([("system", system), ("human", payload)])))
-        except Exception as exc:  # malformed reply or a transient API error
-            last_error = exc
+    payload = _extract_json(_message_text(result["messages"][-1]))
+    quotes = []
+    for item in payload.get("quotes") or []:
+        if not isinstance(item, dict):
             continue
-        verdict = str(reply.get("verdict", "")).strip().upper()
-        if verdict in VERDICTS:
-            return verdict, str(reply.get("reason") or "").strip()
-        last_error = ValueError(f"model gave no verdict: {reply}")
-    raise last_error or ValueError("model gave no verdict")
+        text = str(item.get("text") or "").strip().strip('"')
+        if _looks_like_refusal(text):
+            continue
+        quotes.append({"role": str(item.get("role") or "").strip(), "text": text})
+    return {"quotes": quotes}
 
 
-def judge_labour(model: Any, quote: str) -> tuple[str, str]:
-    """Two independent model calls on the same quote; the reflection pass wins on conflict."""
+def label_dimensions(model: Any, company: str, quote: str) -> dict[str, str]:
+    """Point 7 step 2: two independent labellings; a dimension they disagree on is unclear."""
+    system = DIMENSION_SYSTEM.format(company=company, **LABOUR_DIMENSIONS)
     payload = f'Employee statement: "{quote}"'
-    first_verdict, first_reason = _judge_once(model, CLASSIFY_SYSTEM.format(rule=LABOUR_RULE), payload)
+    first = _call_json(model, system, payload)
     try:
-        second_verdict, second_reason = _judge_once(model, REFLECT_SYSTEM.format(rule=LABOUR_RULE), payload)
+        second = _call_json(model, system, payload)
     except Exception:
-        # the reflection pass is a bonus check: never let it lose the first verdict
-        return first_verdict, first_reason
-    return second_verdict, second_reason
+        second = first
+    labels: dict[str, str] = {}
+    for key in LABOUR_DIMENSIONS:
+        a = LABEL_WORDS.get(str(first.get(key, "")).strip().lower(), "unclear")
+        b = LABEL_WORDS.get(str(second.get(key, "")).strip().lower(), "unclear")
+        labels[key] = a if a == b else "unclear"
+    return labels
+
+
+def labour_judgement(labelled: list[dict[str, str]]) -> dict[str, Any]:
+    """Point 7 step 3: count favourable and adverse dimensions over every quote.
+
+    Fisher asks for *outstanding* relations, so the rule is asymmetric on purpose:
+    any adverse dimension that is not clearly outweighed fails the point, while
+    silence on a dimension counts for nothing.
+    """
+    if not labelled:
+        return {"verdict": "PASS", "confidence": "none",
+                "basis": "nobody was willing to comment on working conditions"}
+    favourable = sum(1 for lab in labelled for k in LABOUR_DIMENSIONS if lab.get(k) == "favourable")
+    adverse = sum(1 for lab in labelled for k in LABOUR_DIMENSIONS if lab.get(k) == "adverse")
+    if favourable + adverse == 0:
+        return {"verdict": "PASS", "confidence": "none",
+                "basis": "the employees spoke, but about nothing this point turns on"}
+    if adverse >= favourable:
+        return {"verdict": "FAIL", "confidence": "high" if adverse >= 2 else "low",
+                "basis": f"{adverse} adverse and {favourable} favourable dimensions across "
+                         f"{len(labelled)} employee account(s)"}
+    return {"verdict": "PASS", "confidence": "high" if favourable >= 2 else "low",
+            "basis": f"{favourable} favourable and {adverse} adverse dimensions across "
+                     f"{len(labelled)} employee account(s)"}
 
 
 def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
-    """Full pipeline for one company: route -> gather -> compute -> judge -> reflect -> summarise."""
+    """Full pipeline for one company: route -> gather -> compute -> label -> judge -> summarise."""
     _list_documents, read_document, sql_query, interview_tool = tools
 
     # 1. Database track: points 1 and 5, computed in Python from tool output.
     evidence = collect_database_evidence(sql_query)
-    verdicts = {POINT_MARKET: market_verdict(evidence), POINT_MARGIN: margin_verdict(evidence)}
+    market = market_judgement(evidence)
+    margin = margin_judgement(evidence)
+    verdicts = {POINT_MARKET: market["verdict"], POINT_MARGIN: margin["verdict"]}
 
-    # 2. Interview track: point 7 via the scuttlebutt sub-agent, then two model judgements.
+    # 2. Interview track: point 7, two voices, five dimensions each, labelled twice.
+    quotes: list[dict[str, str]] = []
     try:
-        labour = labour_evidence(model, interview_tool, evidence)
-        if labour["found"]:
-            verdicts[POINT_LABOUR], labour_reason = judge_labour(model, labour["quote"])
-        else:
-            verdicts[POINT_LABOUR] = "PASS"  # nobody complained: nothing against the company
-            labour_reason = "No employee was willing to comment on working conditions."
+        quotes = labour_evidence(model, interview_tool, evidence)["quotes"]
+        labelled = [label_dimensions(model, evidence["company"], q["text"]) for q in quotes]
+        labour = labour_judgement(labelled)
     except Exception as exc:  # an interview problem must not lose the other two points
-        labour = {"quote": "", "role": "", "found": False}
-        verdicts[POINT_LABOUR] = "PASS"
-        labour_reason = f"Interview step failed ({exc}); no adverse evidence found."
+        labour = {"verdict": "PASS", "confidence": "none",
+                  "basis": f"the interview step failed ({type(exc).__name__}); no adverse evidence"}
+    verdicts[POINT_LABOUR] = labour["verdict"]
 
     # 3. Documents: read the letter to shareholders so management's claims can be checked.
-    #    The file name is discovered from list_documents, not hard-coded.
     letter = ""
     try:
         listing = str(_list_documents.invoke({}))
@@ -361,18 +560,18 @@ def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
         letter = ""
 
     # 4. Summary: the model explains the three verdicts, it does not decide them.
+    quote_block = " ".join(f'{q["role"].replace("_", " ")}: "{q["text"]}"' for q in quotes) or "none available"
     facts = (
         f"Company: {evidence['company']} ({evidence['industry']}).\n"
-        f"Point 1 market potential -> {verdicts[POINT_MARKET]}. Revenue FY2023 "
-        f"USD {evidence['revenue_fy2023_musd']:.1f}m, FY2025 USD {evidence['revenue_fy2025_musd']:.1f}m, "
-        f"growth {evidence['growth_2y_pct']:.1f}% vs industry median {evidence['industry_growth_2y_pct']:.1f}%.\n"
-        f"Point 5 profit margin -> {verdicts[POINT_MARGIN]}. Operating profit FY2025 "
-        f"USD {evidence['operating_profit_fy2025_musd']:.1f}m on revenue USD {evidence['revenue_fy2025_musd']:.1f}m, "
-        f"margin {evidence['operating_margin_pct']:.1f}% vs industry median "
-        f"{evidence['industry_operating_margin_pct']:.1f}%.\n"
-        f"Point 7 labour relations -> {verdicts[POINT_LABOUR]}. "
-        + (f'A {labour["role"].replace("_", " ")} said: "{labour["quote"]}" ({labour_reason})'
-           if labour["found"] else labour_reason)
+        f"Point 1 market potential -> {market['verdict']} (confidence {market['confidence']}): "
+        f"revenue USD {evidence['revenue_first_musd']:.1f}m in FY{evidence['years_used'][0]} to "
+        f"USD {evidence['revenue_last_musd']:.1f}m in FY{evidence['years_used'][1]}; "
+        f"{market['basis']}. Industry benchmark: {evidence['median_source']}.\n"
+        f"Point 5 profit margin -> {margin['verdict']} (confidence {margin['confidence']}): "
+        f"operating profit USD {evidence['operating_profit_musd']:.1f}m on revenue "
+        f"USD {evidence['revenue_last_musd']:.1f}m; {margin['basis']}.\n"
+        f"Point 7 labour relations -> {labour['verdict']} (confidence {labour['confidence']}): "
+        f"{labour['basis']}. What employees said - {quote_block}"
         + (f"\nManagement's letter claims: {letter}" if letter else "")
     )
     try:
@@ -380,10 +579,7 @@ def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
         summary = " ".join(summary.split())[:600]
     except Exception:
         summary = (
-            f"Growth of {evidence['growth_2y_pct']:.1f}% versus an industry median of "
-            f"{evidence['industry_growth_2y_pct']:.1f}%, an operating margin of "
-            f"{evidence['operating_margin_pct']:.1f}% versus {evidence['industry_operating_margin_pct']:.1f}%, "
-            f"and an employee account of working conditions."
+            f"{market['basis']}; {margin['basis']}; {labour['basis']}."
         )
 
     return {"points": verdicts, "summary": summary}
