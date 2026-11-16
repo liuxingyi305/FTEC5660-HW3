@@ -12,49 +12,44 @@ For every company this script computes both points under each variant and
 reports (a) how many of the 20 public verdicts each variant still gets right,
 and (b) how many companies change verdict relative to the shipped code.
 
-Read-only: company.db is opened with mode=ro.
+Reads company data through the same ``sql_query`` tool the agent uses, per
+Section 2 of the homework.
 """
 
 from __future__ import annotations
 
 import itertools
 import json
-import sqlite3
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import hw3  # noqa: E402
 
 DATA = Path("public_test")
 KEY = json.loads((DATA / "ground_truth.json").read_text(encoding="utf-8"))
 
 
-def rows(db: Path, sql: str) -> list[tuple]:
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    try:
-        return conn.execute(sql).fetchall()
-    finally:
-        conn.close()
-
-
 def load(folder: Path) -> dict:
-    db = folder / "company.db"
-    months = dict(rows(db, "SELECT substr(month,1,4), COUNT(*) FROM monthly_costs GROUP BY 1"))
-    revenue = dict(rows(db, "SELECT substr(order_date,1,4), SUM(amount) FROM orders GROUP BY 1"))
-    costs = {
-        y: (c, s, r)
-        for y, c, s, r in rows(
-            db,
-            "SELECT substr(month,1,4), SUM(cost_of_sales), SUM(selling_admin), "
-            "SUM(research_development) FROM monthly_costs GROUP BY 1",
-        )
-    }
-    industry, med_g, med_m = rows(
-        db,
-        "SELECT c.industry, m.revenue_growth_2y_pct, m.operating_margin_pct "
-        "FROM company c JOIN industry_medians m ON m.industry = c.industry",
-    )[0]
+    sql = hw3.make_tools(folder)[2]
+
+    def q(query: str) -> list[dict[str, str]]:
+        return hw3._maybe_rows(sql, query)
+
+    months = {r["y"]: int(float(r["n"])) for r in q(
+        "SELECT substr(month,1,4) AS y, COUNT(*) AS n FROM monthly_costs GROUP BY y")}
+    revenue = {r["y"]: float(r["v"]) for r in q(
+        "SELECT substr(order_date,1,4) AS y, SUM(amount) AS v FROM orders GROUP BY y")}
+    costs = {r["y"]: (float(r["c"]), float(r["s"]), float(r["r"])) for r in q(
+        "SELECT substr(month,1,4) AS y, SUM(cost_of_sales) AS c, SUM(selling_admin) AS s, "
+        "SUM(research_development) AS r FROM monthly_costs GROUP BY y")}
+    med = q("SELECT c.industry AS i, m.revenue_growth_2y_pct AS g, "
+            "m.operating_margin_pct AS m FROM company c "
+            "JOIN industry_medians m ON m.industry = c.industry")[0]
     full = sorted(y for y, n in months.items() if n >= 12 and y in revenue)
-    return {"industry": industry, "med_g": med_g, "med_m": med_m, "years": full,
-            "revenue": revenue, "costs": costs}
+    return {"industry": med["i"], "med_g": float(med["g"]), "med_m": float(med["m"]),
+            "years": full, "revenue": revenue, "costs": costs}
 
 
 def growth(d: dict, kind: str) -> float:

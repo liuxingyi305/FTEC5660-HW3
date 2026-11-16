@@ -669,7 +669,17 @@ def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
 
 
 def build_agent() -> Any:
-    """Create the DeepSeek chat model once; the tools are per company."""
+    """Create and return your model or agent once.
+
+    Suggested imports:
+        from langchain_deepseek import ChatDeepSeek
+        from langchain.agents import create_agent
+
+    Use the DeepSeek model named by ``MODEL_NAME``. The API key is loaded
+    from .env. Each company has its own tools (see ``analyze_companies``), so
+    you will probably create one tool-calling agent per company there.
+    """
+    ### YOUR CODE HERE
     import os
 
     from langchain_deepseek import ChatDeepSeek

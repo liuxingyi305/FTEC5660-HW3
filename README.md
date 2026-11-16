@@ -478,6 +478,26 @@ years, which it is for all 20 companies). The fragility that survives is in the 
 definition: 2 verdicts at point 5 move if every industry median moves 2 points,
 and that is the number `test_sim.py` turns into an expected score.
 
+### Rules check
+
+Every constraint in Sections 2, 3.4 and 3.5 of the homework, and where it is met:
+
+| Requirement | How this repo meets it |
+| --- | --- |
+| 3 points, no more (Section 1, 3.3) | `CHOSEN_POINTS = [1, 5, 7]`; the runner grades exactly those three |
+| Fill the three `### YOUR CODE HERE` places; do not change provided code (3.4) | the marker is still in all three places (`CHOSEN_POINTS`, `build_agent`, `analyze_companies`); `git diff` against the starter shows **zero** changes below the last marker — the tools, runner and scoring are byte-identical |
+| `deepseek-v4-flash` only, with LangChain (Section 2) | `ChatDeepSeek(model=MODEL_NAME)` where `MODEL_NAME` is the provided constant; every call goes through LangChain, no other provider and no other model |
+| Company data only through the four tools (§2) | the agent calls `list_documents`, `read_document`, `sql_query`, `interview` and nothing else; there is no `sqlite3`, no `open()` on `company.db` or `interviews.dat` anywhere in `hw3.py` except the provided tool code. The audit scripts read through the same `sql_query` tool; `test_rename.py` copies a company into a temporary fixture and is never imported by the agent |
+| No hard-coded folder names, company names or public answers (3.4) | no company name or folder name appears in `hw3.py` outside the provided docstring; the annual letter is found by `list_documents`, years by ledger coverage, industries by the database row. `ground_truth.json` is never read by the agent, only by the provided scorer |
+| Arithmetic in SQL/Python, not in the model's head (3.3 tip) | every sum, ratio and date difference is a SQL aggregate or a Python expression; the model writes prose and labels five dimensions, and is forbidden from changing a verdict |
+| At most 50 rows per query (§3.1) | every query aggregates; the widest result is the eight-row `industry_medians` table |
+| At most 10 interviews per company (§3.1) | 2 per company, planned by a sub-agent with a budget of 3 |
+| A short summary per company that explains the verdicts (§3.1) | one chained call, given the verdicts as fixed facts |
+| Per-company error isolation (3.4) | `try/except` around each company plus a 600s timeout; `test_errors.py` proves a company whose tools all raise still gets an entry |
+| Finish in 30 minutes (3.5) | 2 minutes for all 20 companies on 4 workers |
+| `requirements.txt` covers what is used; no key in the code (Section 2, 6) | no new packages are needed (LangChain, langchain-deepseek only); the key is read from `.env`, which `git ls-files` confirms is untracked |
+| Report items (§4) | the three rules with Fisher quotes, a mermaid design diagram plus a paragraph, the public score and the disagreement list (empty) are all in this README |
+
 ### Residual risk
 
 Two things I cannot fix from inside this repository. The rules were designed with

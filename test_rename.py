@@ -10,6 +10,11 @@ the verdicts must stay untouched as well.
 If a rule leaned on a company name, a folder name or a ticker code, this is where
 it would break. Writes to a temporary directory only; `public_test` is opened
 read-only.
+
+The one place in this repo that touches `company.db` directly is the copy made
+here, and only to rename the company inside the fixture it is building. The agent
+never does that: `hw3.py` reaches company data through the four tools, and the
+audit scripts go through the same `sql_query` tool.
 """
 
 from __future__ import annotations

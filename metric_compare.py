@@ -12,69 +12,50 @@ is scored on three things:
            1pp, and again when the measurement window is moved by a year. A rule
            that only works at one exact benchmark value is not a rule.
 
-Read-only: opens each company.db with mode=ro and writes nothing.
+Company data is read through the same ``sql_query`` tool the agent uses, not by
+opening company.db directly (Section 2 of the homework requires that of the
+agent, and there is no reason for the audit to hold itself to a lower standard).
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import hw3  # noqa: E402
 
 DATA = Path("public_test")
 KEY = json.loads((DATA / "ground_truth.json").read_text(encoding="utf-8"))
 
 
-def q(db: Path, sql: str) -> list[tuple]:
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    try:
-        return conn.execute(sql).fetchall()
-    finally:
-        conn.close()
-
-
 def load(folder: Path) -> dict:
     """Revenue/cost series by calendar year, keeping only complete years."""
-    months = {
-        y: n
-        for y, n in q(folder / "company.db",
-                      "SELECT substr(month,1,4), COUNT(*) FROM monthly_costs GROUP BY 1")
-    }
-    revenue = {
-        y: v
-        for y, v in q(folder / "company.db",
-                      "SELECT substr(order_date,1,4), SUM(amount) FROM orders GROUP BY 1")
-    }
-    costs = {
-        y: (c, s, r)
-        for y, c, s, r in q(
-            folder / "company.db",
-            "SELECT substr(month,1,4), SUM(cost_of_sales), SUM(selling_admin), "
-            "SUM(research_development) FROM monthly_costs GROUP BY 1",
-        )
-    }
-    cash = {
-        y: (o, c)
-        for y, o, c in q(
-            folder / "company.db",
-            "SELECT substr(quarter,1,4), SUM(operating_cash_flow), SUM(capex) "
-            "FROM quarterly_cash GROUP BY 1",
-        )
-    }
-    units = {
-        y: n
-        for y, n in q(folder / "company.db",
-                      "SELECT substr(month,1,4), SUM(units_shipped) FROM returns GROUP BY 1")
-    }
-    industry, med_g, med_m = q(
-        folder / "company.db",
-        "SELECT c.industry, m.revenue_growth_2y_pct, m.operating_margin_pct "
-        "FROM company c JOIN industry_medians m ON m.industry = c.industry",
-    )[0]
+    sql = hw3.make_tools(folder)[2]  # list_documents, read_document, sql_query, interview
+
+    def q(query: str) -> list[dict[str, str]]:
+        return hw3._maybe_rows(sql, query)
+
+    months = {r["y"]: int(float(r["n"])) for r in q(
+        "SELECT substr(month,1,4) AS y, COUNT(*) AS n FROM monthly_costs GROUP BY y")}
+    revenue = {r["y"]: float(r["v"]) for r in q(
+        "SELECT substr(order_date,1,4) AS y, SUM(amount) AS v FROM orders GROUP BY y")}
+    costs = {r["y"]: (float(r["c"]), float(r["s"]), float(r["r"])) for r in q(
+        "SELECT substr(month,1,4) AS y, SUM(cost_of_sales) AS c, SUM(selling_admin) AS s, "
+        "SUM(research_development) AS r FROM monthly_costs GROUP BY y")}
+    cash = {r["y"]: float(r["o"]) for r in q(
+        "SELECT substr(quarter,1,4) AS y, SUM(operating_cash_flow) AS o "
+        "FROM quarterly_cash GROUP BY y")}
+    units = {r["y"]: float(r["n"]) for r in q(
+        "SELECT substr(month,1,4) AS y, SUM(units_shipped) AS n FROM returns GROUP BY y")}
+    med = q("SELECT c.industry AS i, m.revenue_growth_2y_pct AS g, "
+            "m.operating_margin_pct AS m FROM company c "
+            "JOIN industry_medians m ON m.industry = c.industry")[0]
     full = sorted(y for y, n in months.items() if n >= 12 and y in revenue)
     return {
-        "industry": industry, "med_g": med_g, "med_m": med_m,
+        "industry": med["i"], "med_g": float(med["g"]), "med_m": float(med["m"]),
         "years": full, "revenue": revenue, "costs": costs, "cash": cash, "units": units,
     }
 
@@ -104,7 +85,7 @@ def metrics(d: dict) -> dict[str, float]:
     yoy = [
         (rev[b] / rev[a] - 1) * 100 for a, b in zip(ys, ys[1:]) if rev[a] > 0
     ]
-    ocf = d["cash"].get(last, (0, 0))[0]
+    ocf = d["cash"].get(last, 0.0)
     return {
         "g_as_reported": (rev[last] / rev[first] - 1) * 100 if span == 2 else float("nan"),
         "g_2y_annualised": norm(rev[first], rev[last], span),
