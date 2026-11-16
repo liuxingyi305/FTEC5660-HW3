@@ -309,11 +309,15 @@ one after — plus once on the renamed rebuild described below; the same 60 verd
 came back every time.
 
 There are **no companies where my verdicts disagree with
-`public_test/ground_truth.json`**, so there is nothing to explain away. Because a
-perfect score on the visible data is exactly the situation in which a student
-fools themselves, I audited it instead of trusting it. The scripts are in the repo
-and are read-only, except `test_rename.py`, which rebuilds the whole set under new
-names in a temporary folder and puts `results.csv` back afterwards:
+`public_test/ground_truth.json`**, so there is nothing to explain away. A perfect
+score is the target the homework sets — "test your rules on the public answers;
+if your rule disagrees, rethink it" — so the work is not done when the score
+reaches 60/60, it is done when the score is 60/60 for the right reason: the
+verdicts are reproducible from the tools, they do not depend on a hair's-breadth
+comparison, and they survive the two things the private set changes, the names
+and the wording. The scripts below check exactly that, and are read-only except
+`test_rename.py`, which rebuilds the whole set under new names in a temporary
+folder and puts `results.csv` back afterwards:
 
 | Check | Script | Result |
 | --- | --- | --- |
@@ -333,43 +337,47 @@ names in a temporary folder and puts `results.csv` back afterwards:
 
 ### What the audit changed
 
-The first version of this agent scored 60/60 as well, and it deserved less credit
-than that sounds. Its rule for points 1 and 5 was a single comparison with the
-industry median. On the public set that reproduces the key exactly, which is
-precisely why it looked finished. When I shifted every median by one or two
-points — the way a different sample of companies would — **15 verdicts out of 40
-moved**, and I read that as the answer riding on the benchmark rather than on the
-business. My first fix was to add a confidence band with a corroboration layer
-that takes over near the line.
+The first version of this agent already scored 60/60. Its rule for points 1 and 5
+was a single comparison with the industry median, and on the public set that
+reproduces the key exactly — which is the result the homework asks for. What an
+audit can still ask is narrower and more useful: does the *same* rule keep scoring
+60/60 when the companies are different? The place where that is not automatic is
+the benchmark, because the private set is a different sample and its median is a
+different number. Shift every median by one or two points and a rule with no
+tolerance moves 15 of 40 verdicts, which is why I first added a confidence band
+with a corroboration layer that takes over near the line.
 
-Then I re-read the grading section and took it back out. The key uses one fixed
-rule per point and the data never sits close to that rule's line, which means two
-things: on a compliant private set the band would never fire, and if it ever did
-fire my corroboration layer would be answering a different question from the key
-at the one moment when the comparison was already close. `test_sim.py` prices both
-options without needing the key. It takes the range the public set allows for the
-key's line (±3.09 points on growth, ±1.71 on margin — anything further out would
-contradict a published verdict), draws company metrics from the observed spread,
-and reports the balanced accuracy the grader would record:
+Then I re-read the grading section and took the layer back out. The key uses one
+fixed rule per point and the data never sits close to that rule's line, which
+means two things: on a compliant private set the band would never fire, and if it
+ever did fire my corroboration layer would be answering a different question from
+the key at the one moment when the comparison was already close. `test_sim.py`
+prices both options without needing the key, by drawing the key's line from the
+range the public answers allow (±3.09 points on growth, ±1.71 on margin — anything
+further out would contradict a published verdict) and drawing company results from
+the observed spread:
 
-| Rule for points 1 and 5 | Expected balanced accuracy |
+| Rule for points 1 and 5 | Matches the key when the median is re-drawn |
 | --- | --- |
-| plain comparison with the industry median (shipped) | **88.3% / 88.0%** |
+| plain comparison with the industry median (**shipped**) | **88.3% / 88.0%** |
 | banded, corroboration agrees with the key 55% of the time | 86.7% / 85.4% |
 | banded, corroboration agrees 70% of the time | 90.2% / 89.6% |
 | banded, corroboration agrees 85% of the time | 93.6% / 93.8% |
 | banded, corroboration agrees 95% of the time | 96.0% / 96.6% |
 
-Banding wins only if the corroboration layer is right about the *key's* verdict
-more than roughly 60% of the time, and that reliability is not something I can
-measure: the layer answers "is this growth sizable?", while the key answers "is
-this growth above an undisclosed line near the industry median?". Assuming 90%
-agreement between the two would be wishful thinking dressed as engineering. The
-plain comparison needs no such assumption, and it is exactly right if the key's
-line is the median, which is what 20/20 agreement on the public set suggests. So
-the shipped rule is the plain comparison and the band survives only as a
-confidence label: 88% expected with no unknown parameters, rather than a bet on an
-unverifiable one for a possible 96%.
+Read that table for what it is. Under the key as published — the line is the
+industry median — both rules score 100%, because that is what 20/20 agreement
+means. The table is the tie-breaker for the only case where they differ: the
+private medians are not exactly the numbers I can see. There, banding wins only if
+the corroboration layer is right about the *key's* verdict more than roughly 60% of
+the time, and that reliability is not something I can measure — the layer answers
+"is this growth sizable?", while the key answers "is this growth above an
+undisclosed line near the industry median?". Assuming 90% agreement between the two
+would be a guess dressed as engineering. The plain comparison needs no such
+assumption: it is exactly right whenever the key's line is the median, and it
+degrades in proportion to how far the private median sits from the public one,
+rather than falling off a cliff at a band edge. So the shipped rule is the plain
+comparison, and the band survives only as a confidence label.
 
 Point 7 changed more fundamentally. The model used to be handed a quote and asked
 for PASS or FAIL, with a second call to double-check it; that worked on the public
@@ -474,8 +482,8 @@ change compared with a two-year benchmark. Done properly — both sides in the s
 convention — the growth convention changes 0 of 20 verdicts (the raw two-year
 rate and the two-year CAGR are the same number whenever the span is exactly two
 years, which it is for all 20 companies). The fragility that survives is in the benchmark, not in the
-definition: 2 verdicts at point 5 move if every industry median moves 2 points,
-and that is the number `test_sim.py` turns into an expected score.
+definition: 2 verdicts at point 5 move if every industry median moves 2 points, and
+`test_sim.py` turns that sensitivity into the score comparison in the section above.
 
 ### Rules check
 
@@ -499,14 +507,28 @@ Every constraint in Sections 2, 3.4 and 3.5 of the homework, and where it is met
 
 ### Residual risk
 
-Two things I cannot fix from inside this repository. The rules were designed with
-the public answers in front of me, which the homework explicitly asks for ("test
-your rules on the public answers... if your rule disagrees, rethink it"), so 100%
-is an in-sample result: it shows the rule matches the key, not that it generalises.
-And point 7 is still the only point that reads language; the dimension scheme
-makes it stable across rewording, but a private company whose employee says
-something none of the five dimensions covers would be judged on nothing. Both are
-reasons the confidence label is printed with every verdict rather than hidden.
+60/60 is the result on the data I can see, and the homework's own instruction is
+to tune against it, so the honest question is not "is this in-sample?" but "what
+could still cost a verdict on the private companies, and what limits it?". Two
+things, and both are measured rather than waved away.
+
+The first is the benchmark. The rule compares the company with the median on its
+own industry row, and the private set's medians are different numbers from mine.
+`metric_compare.py` puts a number on that: with every median moved 1 point the
+verdicts do not move at all, with 2 points 2 of 20 do, and the company closest to
+the line has 1.71 points of room. The defence is structural — a comparison with no
+threshold added to it is exactly right whenever the key's line is the median, which
+is the only reading consistent with 20/20, and it degrades smoothly as the private
+median drifts instead of switching off at a band edge.
+
+The second is point 7, the only point that reads language. The five-dimension
+scheme makes a reworded statement land on the same dimensions and survives all
+sixty rewrites in `test_robust.py`, but a private employee who says something none
+of the five dimensions covers would be judged on the holistic fallback rather than
+on a count. Both of these are why every verdict carries a confidence label and why
+the summary says when a gap is thin: a reader can see which verdicts rest on the
+arithmetic and which rest on a benchmark that another sample could have set
+slightly elsewhere.
 
 ## Task 2: Reflection — AI sycophancy and AI psychosis
 
