@@ -170,7 +170,7 @@ for each public company. Grading uses a private set of about 20 unseen
 companies with the same tools and the same answer key rules, but different
 names and wording, and scores your 3 points only.
 
-## Homework 3 report:
+## Homework 3 solution:
 
 This section answers the report requirements in the order they are asked: the
 three points with their rules and evidence, a visualization of the agent design
