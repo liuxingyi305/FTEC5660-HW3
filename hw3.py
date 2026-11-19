@@ -569,8 +569,9 @@ def labour_judgement(labelled: list[dict[str, str]]) -> dict[str, Any]:
     silence on a dimension counts for nothing.
     """
     if not labelled:
-        return {"verdict": "PASS", "confidence": "none",
-                "basis": "nobody was willing to comment on working conditions"}
+        return {"verdict": "FAIL", "confidence": "none",
+                "basis": "no usable employee statement was gathered; Fisher asks for "
+                         "*outstanding* relations, and a point with no evidence is not credited"}
     favourable = sum(1 for lab in labelled for k in LABOUR_DIMENSIONS if lab.get(k) == "favourable")
     adverse = sum(1 for lab in labelled for k in LABOUR_DIMENSIONS if lab.get(k) == "adverse")
     if favourable + adverse == 0:
@@ -635,8 +636,9 @@ def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
                 labour = holistic_labour_verdict(model, quotes)
             break
         except Exception as exc:  # an interview problem must not lose the other two points
-            labour = {"verdict": "PASS", "confidence": "none",
-                      "basis": f"the interview step failed ({type(exc).__name__}); no adverse evidence"}
+            labour = {"verdict": "FAIL", "confidence": "none",
+                      "basis": f"the interview step failed ({type(exc).__name__}); with no "
+                               f"interview evidence the point cannot be credited"}
     assert labour is not None  # the loop body always sets it
     verdicts[POINT_LABOUR] = labour["verdict"]
 
