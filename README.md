@@ -310,8 +310,12 @@ call writes the two-or-three sentence summary from the verdicts, the ratios, the
 quotes, the confidence and the 2025 letter to shareholders, so management's claims
 can be set against the numbers rather than repeated; it is explicitly forbidden to
 change a verdict. Companies are analysed four at a time with `asyncio.gather` over
-`asyncio.to_thread`, each with a 600-second timeout and its own `try/except`, so
-one bad API call still leaves a full `results.csv`.
+`asyncio.to_thread`, each with a 300-second timeout and its own `try/except`, so
+one bad API call still leaves a full `results.csv`. The timeout is sized so that
+even if every company hung until it fired, the run finishes in 25 minutes — inside
+the 30-minute limit by construction. A failed interview step is retried once
+(quotes already gathered are kept) before the point-7 fallback applies, so a
+transient model error does not turn into a placeholder verdict.
 
 ### Results
 
@@ -564,7 +568,7 @@ Every constraint in Sections 2, 3.4 and 3.5 of the homework, and where it is met
 | At most 50 rows per query (§3.1) | every query aggregates; the widest result is the eight-row `industry_medians` table |
 | At most 10 interviews per company (§3.1) | 2 per company, planned by a sub-agent with a budget of 3 |
 | A short summary per company that explains the verdicts (§3.1) | one chained call, given the verdicts as fixed facts |
-| Per-company error isolation (3.4) | `try/except` around each company plus a 600s timeout; `test_errors.py` proves a company whose tools all raise still gets an entry |
+| Per-company error isolation (3.4) | `try/except` around each company plus a 300s timeout; `test_errors.py` proves a company whose tools all raise still gets an entry |
 | Finish in 30 minutes (3.5) | 2 minutes for all 20 companies on 4 workers |
 | `requirements.txt` covers what is used; no key in the code (Section 2, 6) | no new packages are needed (LangChain, langchain-deepseek only); the key is read from `.env`, which `git ls-files` confirms is untracked |
 | Report items (§4) | the three rules with Fisher quotes, a mermaid design diagram plus a paragraph, the public score and the disagreement list (empty) are all in this README |
@@ -593,5 +597,61 @@ the summary says when a gap is thin: a reader can see which verdicts rest on the
 arithmetic and which rest on a benchmark that another sample could have set
 slightly elsewhere.
 
+## Task 2: Reflection — AI sycophancy and AI psychosis
 
+**Sycophancy is a data problem wearing a personality.** A model trained on human
+approval learns that agreement is rewarded, and the failure is quiet: it does not
+say "you are right", it says "here is a balanced view" and then quietly adopts
+yours. This homework is a controlled experiment in that temptation. Every
+company's shareholder letter is written to be agreeable — "our sales team is
+second to none", "we have never cut research spending". An agent that reads those
+documents and reports what it read will produce confident, well-written,
+completely wrong analysis, because the letters are identical in tone for
+companies that are failing. The 20 public companies make the cost visible: an
+agent that passes everything scores 50% balanced, not 90%, because the metric
+deliberately refuses to reward agreement. Sycophancy is not just flattering, it
+is uninformative, and a scoring rule that separates the two shares is a cheap
+way to make it expensive.
+
+What I had to do to my own agent is the same operation in miniature. The first
+version of the reasoning was going to be "ask the model to compare the margin
+with the industry median". That is a request for agreement, not a check: given
+two numbers and a rule, a model under pressure to be helpful will find a way to
+make them consistent, and the homework warns that model arithmetic was its most
+common cause of wrong verdicts. So the numbers never enter the model's head. They
+are computed in Python from `sql_query` output, and the model is handed the
+answer it must explain. The interesting part is that this made the summaries
+*better*, not just safer: an agent that has nothing to decide writes more
+precisely about what it saw. The same logic applies to the interview: two
+independent judgements, the second told explicitly not to defer to the first,
+because a reviewer who knows the answer is not a reviewer.
+
+**AI psychosis is what happens when a system's model of the world stops being
+corrected by the world.** It is not a single dramatic hallucination; it is a
+loop with no exit condition. The agent invents a fact, builds a plan on it,
+interprets every new observation as confirmation, and spends its budget
+elaborating the mistake. The failure modes are structural, not emotional: no
+termination criterion, no external check, unlimited self-reference. Anyone who
+has watched an agent burn ten tool calls on a misinterpreted error message has
+seen a small version of it.
+
+The homework's design quietly punishes psychosis. There are ten interviews, so
+an agent that keeps asking "to be sure" runs out and starts seeing refusals
+everywhere; the grader runs three times, so luck does not survive; and the
+private set is unseen, so a rule tuned to the public answers collapses. My
+defences are deliberately boring: hard caps (three interview calls, 300 seconds
+per company), a deterministic core that the model cannot talk itself out of, a
+router that is a table rather than an opinion, and a reflection step whose only
+job is to disagree once. The 100% score is not evidence that the agent is
+intelligent; it is evidence that the loop has an exit.
+
+Where this becomes uncomfortable is that the two failures are the same failure
+seen from opposite ends. Sycophancy is the model bending its beliefs toward the
+human; psychosis is the model bending its beliefs toward itself. Both are the
+same missing term: contact with something that cannot be argued with. In this
+homework that thing is `SUM(amount)` — an unglamorous number that does not care
+what anyone thinks. The lesson I am taking away is not "use tools", it is that an
+agent needs at least one part of its world that is expensive to lie to. A model
+allowed to grade its own homework will always pass, and it will be sincere about
+it, which is worse.
 

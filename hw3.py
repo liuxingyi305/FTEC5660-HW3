@@ -95,7 +95,9 @@ LABOUR_RULE = (
 )
 
 MAX_WORKERS = 4          # companies analysed in parallel
-COMPANY_TIMEOUT = 600.0  # seconds per company, so one slow company cannot sink the run
+COMPANY_TIMEOUT = 300.0  # seconds per company, so one slow company cannot sink the run
+# Worst case if every company hung until timeout: ceil(20/4) sequential slots x
+# COMPANY_TIMEOUT = 25 minutes, inside the homework's 30-minute limit with margin.
 INTERVIEW_BUDGET = 3     # interviews the scuttlebutt sub-agent may spend (limit is 10)
 INTERVIEW_ROLES = ("current_employee", "former_employee")
 
@@ -619,16 +621,23 @@ def analyse_one(model: Any, tools: list[Any], name: str) -> dict[str, Any]:
     verdicts = {POINT_MARKET: market["verdict"], POINT_MARGIN: margin["verdict"]}
 
     # 2. Interview track: point 7, two voices, five dimensions each, labelled twice.
+    # A transient model/parse error gets one retry (quotes already gathered are
+    # kept, so the interview budget is not spent twice) before falling back.
     quotes: list[dict[str, str]] = []
-    try:
-        quotes = labour_evidence(model, interview_tool, evidence)["quotes"]
-        labelled = [label_dimensions(model, evidence["company"], q["text"]) for q in quotes]
-        labour = labour_judgement(labelled)
-        if quotes and labour["confidence"] == "none":
-            labour = holistic_labour_verdict(model, quotes)
-    except Exception as exc:  # an interview problem must not lose the other two points
-        labour = {"verdict": "PASS", "confidence": "none",
-                  "basis": f"the interview step failed ({type(exc).__name__}); no adverse evidence"}
+    labour: dict[str, Any] | None = None
+    for _attempt in (1, 2):
+        try:
+            if not quotes:
+                quotes = labour_evidence(model, interview_tool, evidence)["quotes"]
+            labelled = [label_dimensions(model, evidence["company"], q["text"]) for q in quotes]
+            labour = labour_judgement(labelled)
+            if quotes and labour["confidence"] == "none":
+                labour = holistic_labour_verdict(model, quotes)
+            break
+        except Exception as exc:  # an interview problem must not lose the other two points
+            labour = {"verdict": "PASS", "confidence": "none",
+                      "basis": f"the interview step failed ({type(exc).__name__}); no adverse evidence"}
+    assert labour is not None  # the loop body always sets it
     verdicts[POINT_LABOUR] = labour["verdict"]
 
     # 3. Documents: read the letter to shareholders so management's claims can be checked.
