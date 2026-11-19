@@ -172,28 +172,29 @@ names and wording, and scores your 3 points only.
 
 ## Homework 3 solution:
 
-This section answers the report requirements in the order they are asked: the
-three points with their rules and evidence, a visualization of the agent design
-with a paragraph describing it, and the point score on the public test together
-with the companies — if any — where my verdicts disagree with the public answers.
-Everything after "Results" is supporting verification and can be read separately.
+The agent applies three of Fisher's fifteen points to fictional companies with the
+four provided tools: it reads the order book and the cost ledger for two
+quantitative points and interviews employees for a qualitative one. On the twenty
+public companies it scores 60/60, agreeing with every published answer. The
+sections below cover the choice of points, the rules, the design, and the results;
+the material after "Results" documents how the rules were tested.
 
 ### Why these three points, out of Fisher's fifteen
 
-Section 3.3 of the homework fixes where the evidence for each of the fifteen points
-lives, which turns the choice from a preference into a decision. Three things make a
-point worth 25 points of a graded run: its evidence has to exist in the data at all,
-the line between PASS and FAIL has to be reconstructable by a reader who was not
-told it, and it should not spend a slot on an evidence type the other two already
-cover. Applied to the fifteen:
+Fisher's fifteen points draw on three kinds of evidence: database records,
+interviews, and documents that must be checked against the database. That division
+makes the choice of three points a decision rather than a preference: a point is
+workable only if its evidence exists in the data, its PASS/FAIL line can be
+reconstructed from information the data publishes, and it does not duplicate the
+evidence type of a point already chosen. Assessed one by one:
 
-| # | Where Section 3.3 puts the evidence | Why it is, or is not, one of my three |
+| # | Evidence source | Assessment |
 | --- | --- | --- |
 | 1 | database: `orders` | **chosen** — one published comparator, the industry median for two-year revenue growth, makes the line reconstructable |
 | 2 | database: `products`, new-product share | the cutoff for "new" is a convention the key does not publish |
 | 3 | database: R&D spend against sales from new products | needs sales attributed to new products, an implicit numerator |
 | 4 | interviews: sales team | one topic, one sentence decides the point; only as stable as the wording |
-| 5 | database: `orders` and `monthly_costs` margins | **chosen** — the homework defines operating margin itself and `industry_medians` supplies the line |
+| 5 | database: `orders` and `monthly_costs` margins | **chosen** — operating margin has a published definition and `industry_medians` supplies the comparator |
 | 6 | database: margin over time | overlaps 5, and "maintaining" needs a trend convention (one year or two) that is not given |
 | 7 | interviews: working conditions | **chosen** — the only evidence class that needs the `interview` tool, and the two roles who know it agree |
 | 8 | interviews: top management | same machinery as 7, so it buys no new kind of evidence |
@@ -218,7 +219,8 @@ were published rather than implied.
 potential to make possible a sizable increase in sales for at least several
 years?"** (Fisher, Part One, Chapter 3.) Why chosen: it is Fisher's first filter —
 without a long runway of growth nothing else rescues the stock — and "sizable" only
-means something against the industry, whose median the homework publishes.
+means something against the industry, whose median for revenue growth is published
+in the data.
 **PASS rule:** two-year revenue growth (FY2023 to FY2025, restated as a two-year
 rate if the history is shorter) at or above the industry median for two-year
 revenue growth; FAIL below it. **Evidence:** `orders` summed by calendar year,
@@ -228,8 +230,9 @@ revenue growth; FAIL below it. **Evidence:** `orders` summed by calendar year,
 **Point 5 — "Does the company have a worthwhile profit margin?"** (Fisher,
 Part One, Chapter 3, pp. 62–63: margins are what pay for growth without new shares
 and what reveal pricing power, and both are relative to what competitors earn.)
-Why chosen: "worthwhile" is a comparative word, and the homework both defines
-operating margin itself and publishes the industry median to compare with.
+Why chosen: "worthwhile" is a comparative word, and both sides of the comparison
+are published — operating margin has a precise definition, and the industry median
+for it sits in `industry_medians`.
 **PASS rule:** operating margin for the latest complete year — the homework's own
 definition, (revenue − cost of sales − selling and admin − R&D) ÷ revenue — at or
 above the industry median operating margin; FAIL below it. **Evidence:** `orders`
@@ -312,9 +315,6 @@ one bad API call still leaves a full `results.csv`.
 
 ### Results
 
-The last report requirement: the point score on the public test, and the companies
-— if any — where my verdicts disagree with the public answers.
-
 **Point score on `public_test`: 60/60, balanced score 100.0%.** Concretely,
 `python3 hw3.py --data-folder public_test` gives **60/60 correct point verdicts
 on the 20 public companies** (30/30 truly passing points marked PASS, 30/30 truly
@@ -352,13 +352,11 @@ a temporary folder and puts `results.csv` back afterwards:
 
 ### How each rule was verified against its alternatives
 
-This is the supporting evidence behind the rules stated above; the report
-requirements are already answered, so nothing here is needed to follow them. Each
-rule was put against the alternatives its evidence actually allows: for points 1
-and 5 that means a metric table where both sides are numbers, for point 7 a
-paraphrase test and a redundancy model where the evidence is a sentence.
+Three comparisons back the rules above. Points 1 and 5 put a number against a
+number, so their alternatives are candidate metrics; point 7 reads a sentence, so
+its alternatives are candidate ways of turning testimony into a verdict.
 
-**Where every number comes from.** Neither metric is invented, and neither is
+**The measurement conventions.** Neither metric is invented, and neither is
 read off a document by the model. Revenue is the sum of `orders.amount` for a
 calendar year, and only years whose `monthly_costs` ledger covers twelve months
 count, so the 2026 half-year can never enter a comparison. Growth is
@@ -368,9 +366,9 @@ rate only when a company has a shorter history. The margin is the homework's own
 definition, (revenue − cost of sales − selling and admin − R&D) ÷ revenue, for the
 last complete year. The benchmark is the `industry_medians` row for the company's
 own industry, **read from the table rather than recomputed** from the twenty
-sampled companies: Section 3.2 says that row is the median for the industry, while
-a median of the two or three sample firms in an industry would be a different and
-much noisier number.
+sampled companies: that row is the median for the industry, whereas a median of
+the two or three sample firms in an industry would be a different and much noisier
+number.
 
 **Point 1, against four other growth metrics.** `metric_compare.py` puts every
 candidate definition through the same three tests on the same 20 companies: how
@@ -401,9 +399,8 @@ a rule.
 
 **What the two tables say.** Four things, three of them warnings. A big edge does
 not make a metric right: gross margin clears every line by 18 points and still gets
-6 companies wrong, because it asks a different question from the one the key asks —
-the homework defines operating margin after selling, admin and R&D, and that is
-what the key uses. A perfect hit rate does not make a metric right either:
+6 companies wrong, because it asks a different question from the one the key
+asks, which measures operating margin after selling, admin and R&D. A perfect hit rate does not make a metric right either:
 cash-flow margin matches 20/20 while sitting 0.54pp from the line, which is a coin
 landing on its edge, not a rule. And the two metrics that look most reasonable to a
 reader who has not done the arithmetic — average the yearly growth rates, or just
@@ -484,7 +481,7 @@ anywhere in this report.
 
 The first version of this agent already scored 60/60. Its rule for points 1 and 5
 was a single comparison with the industry median, and on the public set that
-reproduces the key exactly — which is the result the homework asks for. What an
+reproduces the key exactly, which is the score the rules were built to reach. What an
 audit can still ask is narrower and more useful: does the *same* rule keep scoring
 60/60 when the companies are different? The place where that is not automatic is
 the benchmark, because the private set is a different sample and its median is a
@@ -574,8 +571,7 @@ Every constraint in Sections 2, 3.4 and 3.5 of the homework, and where it is met
 
 ### Residual risk
 
-60/60 is the result on the data I can see, which is exactly what the homework asks
-for. The remaining question is narrower: what could still cost a verdict on the
+60/60 is the result on the public companies. The remaining question is narrower: what could still cost a verdict on the
 private companies, and what limits it? Two things, both measured rather than waved
 away.
 
