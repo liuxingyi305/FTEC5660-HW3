@@ -172,7 +172,13 @@ names and wording, and scores your 3 points only.
 
 ## Homework 3 report:
 
-### Choosing the three points
+This section answers the report requirements in the order they are asked: the
+three points with their rules and evidence, a visualization of the agent design
+with a paragraph describing it, and the point score on the public test together
+with the companies — if any — where my verdicts disagree with the public answers.
+Everything after "Results" is supporting verification and can be read separately.
+
+### Why these three points, out of Fisher's fifteen
 
 Section 3.3 of the homework fixes where the evidence for each of the fifteen points
 lives, which turns the choice from a preference into a decision. Three things make a
@@ -206,36 +212,151 @@ deciding evidence anywhere. Two were close calls — 13 would have made an attra
 second database point if a share count existed, and 3 if "sales from new products"
 were published rather than implied.
 
-### The three rules
+### The three points and their rules
 
-The three points I kept are **1, 5 and 7**. Together they force the agent to use two different
-kinds of evidence — an order book and a cost ledger on one side, an employee's own
-words on the other — which is exactly the split Fisher draws between what a
-company reports and what the outside world says about it.
+**Point 1 — "Does the company have products or services with sufficient market
+potential to make possible a sizable increase in sales for at least several
+years?"** (Fisher, Part One, Chapter 3.) Why chosen: it is Fisher's first filter —
+without a long runway of growth nothing else rescues the stock — and "sizable" only
+means something against the industry, whose median the homework publishes.
+**PASS rule:** two-year revenue growth (FY2023 to FY2025, restated as a two-year
+rate if the history is shorter) at or above the industry median for two-year
+revenue growth; FAIL below it. **Evidence:** `orders` summed by calendar year,
+`monthly_costs` month coverage to identify which years are complete, and
+`industry_medians.revenue_growth_2y_pct`.
 
-All three rules are built around one question: **what single comparison decides
-this point?** For points 1 and 5 it is the company's ratio against the industry
-median; for point 7 it is the count of favourable against adverse dimensions.
-Everything else the pipeline gathers — a confidence band, the margin trend, the
-cash conversion, a second employee — is reported as context and sets a confidence
-label, but none of it can move a verdict. I had that the other way round in an
-earlier version and reversed it after re-reading Section 3.5: the key uses one
-fixed rule per point and *the data never sits close to that rule's line*, so a
-layer that overrides the comparison near the line could only ever push an answer
-away from the key. The section "What the audit changed" prices that decision.
+**Point 5 — "Does the company have a worthwhile profit margin?"** (Fisher,
+Part One, Chapter 3, pp. 62–63: margins are what pay for growth without new shares
+and what reveal pricing power, and both are relative to what competitors earn.)
+Why chosen: "worthwhile" is a comparative word, and the homework both defines
+operating margin itself and publishes the industry median to compare with.
+**PASS rule:** operating margin for the latest complete year — the homework's own
+definition, (revenue − cost of sales − selling and admin − R&D) ÷ revenue — at or
+above the industry median operating margin; FAIL below it. **Evidence:** `orders`
+and `monthly_costs`, against `industry_medians.operating_margin_pct`.
 
-| # | Fisher's question (his words) | Why it matters in Fisher's framework | My PASS rule | Evidence |
-| --- | --- | --- | --- | --- |
-| 1 | "Does the company have products or services with sufficient market potential to make possible a sizable increase in sales for at least several years?" | Fisher's first filter: without a long runway of growth nothing else rescues the stock. "Sizable" is meaningless in the abstract, so it is measured against the industry. | **Decisive:** two-year revenue growth (restated as a two-year rate if the history is shorter) **at or above the industry median**. Nothing is added to the median. A gap under 1.5 points is labelled thin in the summary, next to the growth in every year and whether the rate clears 10%, but the verdict stays the comparison. | `orders` (sum of `amount` by year), `monthly_costs` (month coverage, to know which years are complete), `industry_medians.revenue_growth_2y_pct` |
-| 5 | "Does the company have a worthwhile profit margin?" | The word doing the work is "worthwhile". Fisher cares about margins because they pay for growth without new shares and because they reveal pricing power; both are relative to what competitors earn. | **Decisive:** FY2025 operating margin **at or above the industry median**. A gap under 1.0 point is labelled thin, with the margin trend and the cash conversion printed as context, but the verdict stays the comparison. | `orders` + `monthly_costs` (+ `quarterly_cash` for context), against `industry_medians.operating_margin_pct` |
-| 7 | "Does the company have outstanding labor and personnel relations?" | The point that cannot be read off a database. It is Fisher's "scuttlebutt" method: go outside the company and ask the people who work there, because management's "our people are our greatest strength" proves nothing. | Two employee accounts are collected, and each is labelled on five dimensions — pay, tenure, hours, grievances, disputes. **PASS when favourable dimensions clearly outnumber adverse ones; FAIL when adverse ones do not fall short** (any adverse dimension that is not outweighed fails the point, because Fisher asks for *outstanding* relations). Silence on a dimension counts for nothing. | `interview(role, topic="working_conditions")`, roles `current_employee` and `former_employee` (the only two who know this topic) |
+**Point 7 — "Does the company have outstanding labor and personnel relations?"**
+(Fisher, Part One, Chapter 3: the "scuttlebutt" method — go outside the company and
+ask the people who work there, because management's "our people are our greatest
+strength" proves nothing.) Why chosen: it is the one point whose evidence cannot be
+read off a database, and it exercises the `interview` tool the other two do not
+touch. **PASS rule:** two employee accounts are each labelled on five dimensions —
+pay, tenure, hours, grievances, disputes; PASS when favourable dimensions clearly
+outnumber adverse ones, FAIL when an adverse dimension is not outweighed, because
+Fisher asks for *outstanding* relations. **Evidence:**
+`interview(role, topic="working_conditions")` with roles `current_employee` and
+`former_employee`, the only two who know that topic.
 
-### Choosing each rule, and what it was compared against
+One property shared by all three rules: the verdict is a single comparison, and
+everything else the pipeline gathers — a confidence band, the margin trend, the
+cash conversion, a second employee — is context that sets a confidence label and
+never moves a verdict. I had that the other way round in an earlier version and
+reversed it after re-reading Section 3.5; "What the audit changed" tells that
+story.
 
-The first table compares points. This section compares rules inside a chosen point:
-the evidence is fixed by then, but the arithmetic over it is not, so each choice was
-put against the alternatives it actually has — a metric table where both sides are
-numbers, a paraphrase test and a redundancy model where the evidence is a sentence.
+### Design
+
+```mermaid
+flowchart TD
+    A["company folder<br/>list_documents · read_document · sql_query · interview"] --> B{"Router<br/>point → evidence source<br/>(static table, no model)"}
+    B -->|"points 1 + 5"| C["sql_query × 5<br/>company · medians · revenue by year<br/>costs by year · month coverage · cash"]
+    C --> D["Python: which years are complete?<br/>growth (normalised to 2y) · operating margin<br/>trend · cash conversion"]
+    D --> E{"sign of own − industry median<br/>no threshold added: this is the verdict"}
+    E --> F["verdict 1, 5<br/>+ confidence label<br/>(gap under the band → low,<br/>verdict unchanged)"]
+    F --> H["verdict 1, 5"]
+    B -->|"point 7"| I["Scuttlebutt sub-agent<br/>create_agent + interview tool"]
+    I --> J["plan: current_employee, then<br/>former_employee; ≤ 3 of 10 calls"]
+    J --> K["quotes"]
+    K --> L["drop refusals<br/>(Python, not the model)"]
+    L --> M["label 5 dimensions<br/>× 2 independent passes<br/>disagreement → unclear"]
+    M --> N["count favourable vs adverse<br/>asymmetric tie rule"]
+    N --> O["verdict 7"]
+    H --> P["summary writer<br/>sees verdicts, numbers, quotes,<br/>confidence and the 2025 letter"]
+    O --> P
+    P --> Q["results.csv"]
+```
+
+The router is a fixed table, not a model call: points 1 and 5 can only be
+answered by `sql_query`, point 7 only by `interview`, so letting a model choose
+would add cost and risk without adding information. Everything numeric happens
+twice removed from the model: the model asks for the data through `sql_query`,
+and Python turns the returned rows into a growth rate, an operating margin, a
+trend and a cash conversion. The model is not trusted with the comparison either
+— it never sees a verdict it could argue with, only the numbers it has to explain.
+
+Points 1 and 5 share one path but not one rule. A year only counts if its cost
+ledger covers twelve months, which matters because the last year in every company
+is half a year and treating it as a full year invents a collapse in revenue; a
+short history is normalised to a two-year rate; and if the company's industry is
+missing from `industry_medians` the benchmark falls back to the median across the
+published industries, with the substitution recorded and admitted in the summary.
+The verdict itself is always the comparison with the median; the band only decides
+whether the summary calls the gap thin, and the corroborating numbers are printed
+beside it rather than allowed to overrule it.
+
+Point 7 is the only place where a model touches evidence, and even there it does
+not decide. A tool-calling `create_agent` is given the `interview` tool alone and
+a plan (ask the current employee, then a former employee, never more than three of
+the ten calls), because two independent voices are worth more than one. Python
+then drops refusals by pattern rather than by asking the model whether a
+non-answer was an answer, and the remaining quotes are labelled on five fixed
+dimensions, twice, by two independent passes; a dimension the two passes disagree
+on is treated as unclear. The point is then decided by counting, with an
+asymmetric tie rule that reflects what Fisher is asking for. The final chained
+call writes the two-or-three sentence summary from the verdicts, the ratios, the
+quotes, the confidence and the 2025 letter to shareholders, so management's claims
+can be set against the numbers rather than repeated; it is explicitly forbidden to
+change a verdict. Companies are analysed four at a time with `asyncio.gather` over
+`asyncio.to_thread`, each with a 600-second timeout and its own `try/except`, so
+one bad API call still leaves a full `results.csv`.
+
+### Results
+
+The last report requirement: the point score on the public test, and the companies
+— if any — where my verdicts disagree with the public answers.
+
+**Point score on `public_test`: 60/60, balanced score 100.0%.** Concretely,
+`python3 hw3.py --data-folder public_test` gives **60/60 correct point verdicts
+on the 20 public companies** (30/30 truly passing points marked PASS, 30/30 truly
+failing points marked FAIL), in about **2 minutes**, using **2 interviews per
+company out of the ten allowed**. I ran it four times end to end on the public set
+— three before the last round of generalisation fixes and one after — plus once on
+the renamed rebuild described below; the same 60 verdicts came back every time.
+
+**Companies where my verdicts disagree with the public answers: none.** All twenty
+match on all three points, so there is no disagreement to explain. The reason the
+list is empty is the one the homework itself gives: the rules were tested against
+the public answers and iterated until they agreed ("test your rules on the public
+answers; if your rule disagrees, rethink it"), and then verified to be doing it for
+the right reason — the verdicts are reproducible from the tools, they do not depend
+on a hair's-breadth comparison, and they survive the two things the private set
+changes, the names and the wording. The scripts below check exactly that, and are
+read-only except `test_rename.py`, which rebuilds the whole set under new names in
+a temporary folder and puts `results.csv` back afterwards:
+
+| Check | Script | Result |
+| --- | --- | --- |
+| `results.csv` is what the code produced, not edited by hand | `verify.py` | recomputes points 1 and 5 from the tools with different SQL (CASE WHEN instead of GROUP BY): **20/20 verdicts reproduced** |
+| The answer key is not an absolute cut-off my rule happens to imitate | `verify.py` | **no** fixed growth or margin threshold can separate the 20 answers (0 of 40 candidate cut-offs), so the key must be industry-relative — which is what my rule is |
+| Nothing hidden sits between the number and the letter | `verify.py` | the confidence band fires on **0/20** companies at point 1 (nothing within ±1.5pp of the median) and **0/20** at point 5 (±1.0pp), so all 40 verdicts are the plain comparison and the band only writes a label |
+| The growth convention does not matter | `verify.py` | writing both sides as a CAGR changes **0/20** verdicts |
+| The metric was chosen against alternatives, not assumed | `metric_compare.py` | 11 candidate definitions scored on hit rate, smallest edge and benchmark sensitivity: the shipped pair wins on all three; every plausible rival loses on at least one (gross margin 14/20, mean of yearly rates 6/20, two-year average margin thinner and 3× as benchmark-sensitive) |
+| The verdict is the rule, not my coding choices | `variant_sweep.py` | 30 implementations across the two points (window × margin formula × benchmark × tie-break, plus four peer rules): point 1 moves by at most **2/20**, point 5 by at most **6/20**, and that 6 is entirely the margin formula — the one choice the homework spells out |
+| The rule is not knife-edge | `verify.py` | median distance to the line 3.7 points, smallest 1.71 (Kestrel's margin); **40/40** decisions taken outside the confidence bands |
+| Point 7 survives rewording, the one thing the private set changes | `test_robust.py` | each real quote rewritten **three** ways (formal HR complaint, casual aside, clipped cautious answer) and re-judged: **60/60** paraphrased verdicts match the key with the five-dimension rule — and, in four consecutive runs, the single-question rule it replaced also scores 60/60, so this test does **not** separate them |
+| Point 7 spends its interviews sensibly and drops non-answers | `test_robust.py` | with a mock tool where the current employee refuses, the sub-agent still hears the former employee, the refusal is dropped, and the verdict is the right FAIL |
+| Odd data does not crash the pipeline | `test_degrade.py` | five synthetic shapes — a two-year history, an industry genuinely missing from `industry_medians`, the same industry spelled with different capitalisation, a final year with 8 months of costs, a four-year history, and a zero-revenue first year — each produces verdicts plus a note recording what was substituted |
+| The rule does not lean on a company's name | `test_rename.py` | all 20 companies renamed in the folder names, the documents, the interviews and the `company` table, then re-run end to end: **60/60**, and **0** verdicts contradicting the key |
+| It runs from a clean checkout, as Section 6 asks | `git clone` into an empty directory | a fresh clone of this repo runs end to end in **2m 02s**, prints 60/60, writes a 20-row `results.csv`, and leaves the working tree clean — nothing depends on an untracked file (the key is the only thing `.env` provides) |
+| One broken company cannot sink the run | `test_errors.py` | a company whose tools all raise still gets an entry and the other company is unaffected |
+
+### How each rule was verified against its alternatives
+
+This is the supporting evidence behind the rules stated above; the report
+requirements are already answered, so nothing here is needed to follow them. Each
+rule was put against the alternatives its evidence actually allows: for points 1
+and 5 that means a metric table where both sides are numbers, for point 7 a
+paraphrase test and a redundancy model where the evidence is a sentence.
 
 **Where every number comes from.** Neither metric is invented, and neither is
 read off a document by the model. Revenue is the sum of `orders.amount` for a
@@ -359,99 +480,6 @@ that test reported the single question at 58/60, and four re-runs before submitt
 gave 60/60 every time, so that number does not stand and is not used as evidence
 anywhere in this report.
 
-### Design
-
-```mermaid
-flowchart TD
-    A["company folder<br/>list_documents · read_document · sql_query · interview"] --> B{"Router<br/>point → evidence source<br/>(static table, no model)"}
-    B -->|"points 1 + 5"| C["sql_query × 5<br/>company · medians · revenue by year<br/>costs by year · month coverage · cash"]
-    C --> D["Python: which years are complete?<br/>growth (normalised to 2y) · operating margin<br/>trend · cash conversion"]
-    D --> E{"sign of own − industry median<br/>no threshold added: this is the verdict"}
-    E --> F["verdict 1, 5<br/>+ confidence label<br/>(gap under the band → low,<br/>verdict unchanged)"]
-    F --> H["verdict 1, 5"]
-    B -->|"point 7"| I["Scuttlebutt sub-agent<br/>create_agent + interview tool"]
-    I --> J["plan: current_employee, then<br/>former_employee; ≤ 3 of 10 calls"]
-    J --> K["quotes"]
-    K --> L["drop refusals<br/>(Python, not the model)"]
-    L --> M["label 5 dimensions<br/>× 2 independent passes<br/>disagreement → unclear"]
-    M --> N["count favourable vs adverse<br/>asymmetric tie rule"]
-    N --> O["verdict 7"]
-    H --> P["summary writer<br/>sees verdicts, numbers, quotes,<br/>confidence and the 2025 letter"]
-    O --> P
-    P --> Q["results.csv"]
-```
-
-The router is a fixed table, not a model call: points 1 and 5 can only be
-answered by `sql_query`, point 7 only by `interview`, so letting a model choose
-would add cost and risk without adding information. Everything numeric happens
-twice removed from the model: the model asks for the data through `sql_query`,
-and Python turns the returned rows into a growth rate, an operating margin, a
-trend and a cash conversion. The model is not trusted with the comparison either
-— it never sees a verdict it could argue with, only the numbers it has to explain.
-
-Points 1 and 5 share one path but not one rule. A year only counts if its cost
-ledger covers twelve months, which matters because the last year in every company
-is half a year and treating it as a full year invents a collapse in revenue; a
-short history is normalised to a two-year rate; and if the company's industry is
-missing from `industry_medians` the benchmark falls back to the median across the
-published industries, with the substitution recorded and admitted in the summary.
-The verdict itself is always the comparison with the median; the band only decides
-whether the summary calls the gap thin, and the corroborating numbers are printed
-beside it rather than allowed to overrule it.
-
-Point 7 is the only place where a model touches evidence, and even there it does
-not decide. A tool-calling `create_agent` is given the `interview` tool alone and
-a plan (ask the current employee, then a former employee, never more than three of
-the ten calls), because two independent voices are worth more than one. Python
-then drops refusals by pattern rather than by asking the model whether a
-non-answer was an answer, and the remaining quotes are labelled on five fixed
-dimensions, twice, by two independent passes; a dimension the two passes disagree
-on is treated as unclear. The point is then decided by counting, with an
-asymmetric tie rule that reflects what Fisher is asking for. The final chained
-call writes the two-or-three sentence summary from the verdicts, the ratios, the
-quotes, the confidence and the 2025 letter to shareholders, so management's claims
-can be set against the numbers rather than repeated; it is explicitly forbidden to
-change a verdict. Companies are analysed four at a time with `asyncio.gather` over
-`asyncio.to_thread`, each with a 600-second timeout and its own `try/except`, so
-one bad API call still leaves a full `results.csv`.
-
-### Results
-
-`python3 hw3.py --data-folder public_test` gives **60/60 correct point verdicts
-on the 20 public companies, balanced score 100.0%** (30/30 truly passing points
-marked PASS, 30/30 truly failing points marked FAIL), in about **2 minutes**,
-using **2 interviews per company out of the ten allowed**. I ran it four times end
-to end on the public set — three before the last round of generalisation fixes and
-one after — plus once on the renamed rebuild described below; the same 60 verdicts
-came back every time.
-
-There are **no companies where my verdicts disagree with
-`public_test/ground_truth.json`**, so there is nothing to explain away. A perfect
-score is the target the homework sets — "test your rules on the public answers;
-if your rule disagrees, rethink it" — so the work is not done when the score
-reaches 60/60, it is done when the score is 60/60 for the right reason: the
-verdicts are reproducible from the tools, they do not depend on a hair's-breadth
-comparison, and they survive the two things the private set changes, the names
-and the wording. The scripts below check exactly that, and are read-only except
-`test_rename.py`, which rebuilds the whole set under new names in a temporary
-folder and puts `results.csv` back afterwards:
-
-| Check | Script | Result |
-| --- | --- | --- |
-| `results.csv` is what the code produced, not edited by hand | `verify.py` | recomputes points 1 and 5 from the tools with different SQL (CASE WHEN instead of GROUP BY): **20/20 verdicts reproduced** |
-| The answer key is not an absolute cut-off my rule happens to imitate | `verify.py` | **no** fixed growth or margin threshold can separate the 20 answers (0 of 40 candidate cut-offs), so the key must be industry-relative — which is what my rule is |
-| Nothing hidden sits between the number and the letter | `verify.py` | the confidence band fires on **0/20** companies at point 1 (nothing within ±1.5pp of the median) and **0/20** at point 5 (±1.0pp), so all 40 verdicts are the plain comparison and the band only writes a label |
-| The growth convention does not matter | `verify.py` | writing both sides as a CAGR changes **0/20** verdicts |
-| The metric was chosen against alternatives, not assumed | `metric_compare.py` | 11 candidate definitions scored on hit rate, smallest edge and benchmark sensitivity: the shipped pair wins on all three; every plausible rival loses on at least one (gross margin 14/20, mean of yearly rates 6/20, two-year average margin thinner and 3× as benchmark-sensitive) |
-| The verdict is the rule, not my coding choices | `variant_sweep.py` | 30 implementations across the two points (window × margin formula × benchmark × tie-break, plus four peer rules): point 1 moves by at most **2/20**, point 5 by at most **6/20**, and that 6 is entirely the margin formula — the one choice the homework spells out |
-| The rule is not knife-edge | `verify.py` | median distance to the line 3.7 points, smallest 1.71 (Kestrel's margin); **40/40** decisions taken outside the confidence bands |
-| Point 7 survives rewording, the one thing the private set changes | `test_robust.py` | each real quote rewritten **three** ways (formal HR complaint, casual aside, clipped cautious answer) and re-judged: **60/60** paraphrased verdicts match the key with the five-dimension rule — and, in four consecutive runs, the single-question rule it replaced also scores 60/60, so this test does **not** separate them |
-| Point 7 spends its interviews sensibly and drops non-answers | `test_robust.py` | with a mock tool where the current employee refuses, the sub-agent still hears the former employee, the refusal is dropped, and the verdict is the right FAIL |
-| Odd data does not crash the pipeline | `test_degrade.py` | five synthetic shapes — a two-year history, an industry genuinely missing from `industry_medians`, the same industry spelled with different capitalisation, a final year with 8 months of costs, a four-year history, and a zero-revenue first year — each produces verdicts plus a note recording what was substituted |
-| The rule does not lean on a company's name | `test_rename.py` | all 20 companies renamed in the folder names, the documents, the interviews and the `company` table, then re-run end to end: **60/60**, and **0** verdicts contradicting the key |
-| It runs from a clean checkout, as Section 6 asks | `git clone` into an empty directory | a fresh clone of this repo runs end to end in **2m 02s**, prints 60/60, writes a 20-row `results.csv`, and leaves the working tree clean — nothing depends on an untracked file (the key is the only thing `.env` provides) |
-| One broken company cannot sink the run | `test_errors.py` | a company whose tools all raise still gets an entry and the other company is unaffected |
-
 ### What the audit changed
 
 The first version of this agent already scored 60/60. Its rule for points 1 and 5
@@ -498,7 +526,7 @@ comparison, and the band survives only as a confidence label.
 
 Point 7's rule was the one that changed during the audit, from a polarity question
 per quote to a count over five dimensions. The comparison behind that choice, and
-the correction it forced, are in "Choosing each rule".
+the correction it forced, are in "How each rule was verified".
 
 I also found and fixed a real bug while generalising. The first version hard-coded
 FY2023 and FY2025. When I made it pick years from the data instead, growth went
