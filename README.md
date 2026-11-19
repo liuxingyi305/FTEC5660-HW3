@@ -170,7 +170,7 @@ for each public company. Grading uses a private set of about 20 unseen
 companies with the same tools and the same answer key rules, but different
 names and wording, and scores your 3 points only.
 
-## Homework 3 solution:
+## Homework 3 report:
 
 ### Choosing the three points
 
